@@ -7,9 +7,14 @@ from playwright.sync_api import sync_playwright
 import os
 import time
 import random
+import json
+from datetime import datetime
 
 # Global variable to store scanned elements
 page_elements = {}
+# Global variable to store recorded actions
+recorded_actions = []
+is_recording = False
 
 def get_edge_profile_path():
     """Get the default Edge profile path for the current user"""
@@ -73,7 +78,7 @@ def scan_page_elements(page):
 
 def interact_with_element(page):
     """Allow user to interact with page elements"""
-    global page_elements
+    global page_elements, recorded_actions, is_recording
     
     if not page_elements:
         print("\n⚠ Please scan the page first (Option 3) to see available elements!")
@@ -102,6 +107,13 @@ def interact_with_element(page):
             idx = int(index)
             page_elements['buttons'][idx].click()
             print(f"✓ Clicked button [{idx}]")
+            
+            if is_recording:
+                recorded_actions.append({
+                    'type': 'click_button',
+                    'index': idx,
+                    'description': f'Click button {idx}'
+                })
         except (ValueError, IndexError):
             print(f"✗ Invalid button number")
         except Exception as e:
@@ -119,6 +131,13 @@ def interact_with_element(page):
             idx = int(index)
             page_elements['links'][idx].click()
             print(f"✓ Clicked link [{idx}]")
+            
+            if is_recording:
+                recorded_actions.append({
+                    'type': 'click_link',
+                    'index': idx,
+                    'description': f'Click link {idx}'
+                })
         except (ValueError, IndexError):
             print(f"✗ Invalid link number")
         except Exception as e:
@@ -137,6 +156,14 @@ def interact_with_element(page):
             idx = int(index)
             page_elements['inputs'][idx].fill(value)
             print(f"✓ Filled input [{idx}] with '{value}'")
+            
+            if is_recording:
+                recorded_actions.append({
+                    'type': 'fill_input',
+                    'index': idx,
+                    'value': value,
+                    'description': f'Fill input {idx}'
+                })
         except (ValueError, IndexError):
             print(f"✗ Invalid input number")
         except Exception as e:
@@ -213,6 +240,15 @@ def interact_with_element(page):
             
             print(" ✓ Done!")
             
+            if is_recording:
+                recorded_actions.append({
+                    'type': 'type_input',
+                    'index': idx,
+                    'value': value,
+                    'base_delay': base_delay,
+                    'description': f'Type in input {idx}'
+                })
+            
         except (ValueError, IndexError):
             print(f"✗ Invalid input number")
         except Exception as e:
@@ -231,6 +267,14 @@ def interact_with_element(page):
             idx = int(index)
             page_elements['selects'][idx].select_option(value)
             print(f"✓ Selected '{value}' in dropdown [{idx}]")
+            
+            if is_recording:
+                recorded_actions.append({
+                    'type': 'select_option',
+                    'index': idx,
+                    'value': value,
+                    'description': f'Select dropdown {idx}'
+                })
         except (ValueError, IndexError):
             print(f"✗ Invalid dropdown number")
         except Exception as e:
@@ -248,21 +292,166 @@ def interact_with_element(page):
             idx = int(index)
             page_elements['checkboxes'][idx].check()
             print(f"✓ Checked checkbox [{idx}]")
+            
+            if is_recording:
+                recorded_actions.append({
+                    'type': 'check_checkbox',
+                    'index': idx,
+                    'description': f'Check checkbox {idx}'
+                })
         except (ValueError, IndexError):
             print(f"✗ Invalid checkbox number")
         except Exception as e:
             print(f"✗ Error: {e}")
 
+def save_session():
+    """Save recorded actions to a file"""
+    global recorded_actions
+    
+    if not recorded_actions:
+        print("⚠ No actions recorded yet!")
+        return
+    
+    # Create sessions directory if it doesn't exist
+    if not os.path.exists('sessions'):
+        os.makedirs('sessions')
+    
+    filename = input("\nEnter session name (e.g., 'login_flow'): ").strip()
+    if not filename:
+        filename = f"session_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+    
+    filepath = f"sessions/{filename}.json"
+    
+    try:
+        with open(filepath, 'w') as f:
+            json.dump(recorded_actions, f, indent=2)
+        print(f"✓ Session saved to '{filepath}' ({len(recorded_actions)} actions)")
+    except Exception as e:
+        print(f"✗ Error saving session: {e}")
+
+def load_session(page):
+    """Load and replay a saved session"""
+    global page_elements
+    
+    if not os.path.exists('sessions'):
+        print("⚠ No sessions folder found!")
+        return
+    
+    # List available sessions
+    sessions = [f for f in os.listdir('sessions') if f.endswith('.json')]
+    
+    if not sessions:
+        print("⚠ No saved sessions found!")
+        return
+    
+    print("\n📁 Available Sessions:")
+    for i, session in enumerate(sessions):
+        print(f"  [{i}] {session}")
+    
+    choice = input(f"\nEnter session number [0-{len(sessions)-1}] (or 'c' to cancel): ").strip()
+    
+    if choice.lower() == 'c':
+        print("Cancelled.")
+        return
+    
+    try:
+        idx = int(choice)
+        filepath = f"sessions/{sessions[idx]}"
+        
+        with open(filepath, 'r') as f:
+            actions = json.load(f)
+        
+        print(f"\n🎬 Replaying session '{sessions[idx]}' ({len(actions)} actions)...")
+        print("Press Ctrl+C to stop at any time\n")
+        
+        for i, action in enumerate(actions):
+            print(f"[{i+1}/{len(actions)}] {action['type']}: {action.get('description', '')}")
+            
+            try:
+                if action['type'] == 'navigate':
+                    page.goto(action['url'])
+                    time.sleep(1)
+                
+                elif action['type'] == 'click_button':
+                    # Re-scan to get fresh elements
+                    page_elements['buttons'] = page.locator('button, input[type="button"], input[type="submit"]').all()
+                    page_elements['buttons'][action['index']].click()
+                    time.sleep(0.5)
+                
+                elif action['type'] == 'click_link':
+                    page_elements['links'] = page.locator('a[href]').all()
+                    page_elements['links'][action['index']].click()
+                    time.sleep(0.5)
+                
+                elif action['type'] == 'fill_input':
+                    page_elements['inputs'] = page.locator('input[type="text"], input[type="email"], input[type="password"]').all()
+                    page_elements['inputs'][action['index']].fill(action['value'])
+                    time.sleep(0.3)
+                
+                elif action['type'] == 'type_input':
+                    page_elements['inputs'] = page.locator('input[type="text"], input[type="email"], input[type="password"]').all()
+                    elem = page_elements['inputs'][action['index']]
+                    elem.clear()
+                    
+                    # Type with human-like behavior
+                    for char in action['value']:
+                        variation = random.uniform(-0.4, 0.4)
+                        delay = int(action.get('base_delay', 100) * (1 + variation))
+                        elem.type(char, delay=delay)
+                
+                elif action['type'] == 'select_option':
+                    page_elements['selects'] = page.locator('select').all()
+                    page_elements['selects'][action['index']].select_option(action['value'])
+                    time.sleep(0.3)
+                
+                elif action['type'] == 'check_checkbox':
+                    page_elements['checkboxes'] = page.locator('input[type="checkbox"]').all()
+                    page_elements['checkboxes'][action['index']].check()
+                    time.sleep(0.3)
+                
+            except Exception as e:
+                print(f"  ✗ Error: {e}")
+                retry = input("  Continue with next action? (y/n): ").strip().lower()
+                if retry != 'y':
+                    break
+        
+        print("\n✓ Session replay completed!")
+        
+    except (ValueError, IndexError):
+        print("✗ Invalid session number")
+    except Exception as e:
+        print(f"✗ Error loading session: {e}")
+
+def toggle_recording():
+    """Toggle session recording on/off"""
+    global is_recording, recorded_actions
+    
+    if is_recording:
+        is_recording = False
+        print(f"⏸️  Recording stopped. {len(recorded_actions)} actions recorded.")
+        print("Use 'Save session' to save your workflow.")
+    else:
+        is_recording = True
+        recorded_actions = []
+        print("⏺️  Recording started! All actions will be saved.")
+
 def show_menu():
     """Display the interactive menu"""
+    global is_recording
+    
     print("\n" + "="*50)
     print("🌐 WEB AUTOMATION MENU")
+    if is_recording:
+        print(f"⏺️  RECORDING ({len(recorded_actions)} actions)")
     print("="*50)
     print("1. Navigate to website")
     print("2. Get page information")
     print("3. Scan page elements")
     print("4. Interact with elements")
-    print("5. Close browser and exit")
+    print("5. Toggle recording (save workflow)")
+    print("6. Save session")
+    print("7. Load & replay session")
+    print("8. Close browser and exit")
     print("="*50)
 
 def main():
@@ -291,32 +480,134 @@ def main():
                     context = p.chromium.launch_persistent_context(
                         profile_path,
                         headless=False,
-                        channel="msedge"
+                        channel="msedge",
+                        args=[
+                            '--disable-blink-features=AutomationControlled'
+                        ]
                     )
                     page = context.pages[0] if context.pages else context.new_page()
-                    print("✓ Browser launched with profile!")
+                    
+                    # Remove automation detection
+                    page.add_init_script("""
+                        Object.defineProperty(navigator, 'webdriver', {
+                            get: () => undefined
+                        });
+                        
+                        // Remove automation indicators
+                        window.navigator.chrome = {
+                            runtime: {}
+                        };
+                        
+                        // Overwrite the `plugins` property to use a custom getter
+                        Object.defineProperty(navigator, 'plugins', {
+                            get: () => [1, 2, 3, 4, 5]
+                        });
+                        
+                        // Overwrite the `languages` property to use a custom getter
+                        Object.defineProperty(navigator, 'languages', {
+                            get: () => ['en-US', 'en']
+                        });
+                    """)
+                    
+                    print("✓ Browser launched with profile (stealth mode)!")
                 except Exception as e:
                     print(f"⚠ Could not use profile (Edge might be running): {str(e)[:100]}")
                     print("✓ Using fresh session instead...")
-                    browser = p.chromium.launch(headless=False, channel="msedge")
+                    browser = p.chromium.launch(
+                        headless=False,
+                        channel="msedge",
+                        args=[
+                            '--disable-blink-features=AutomationControlled'
+                        ]
+                    )
                     context = browser.new_context()
                     page = context.new_page()
+                    
+                    # Remove automation detection
+                    page.add_init_script("""
+                        Object.defineProperty(navigator, 'webdriver', {
+                            get: () => undefined
+                        });
+                        
+                        window.navigator.chrome = {
+                            runtime: {}
+                        };
+                        
+                        Object.defineProperty(navigator, 'plugins', {
+                            get: () => [1, 2, 3, 4, 5]
+                        });
+                        
+                        Object.defineProperty(navigator, 'languages', {
+                            get: () => ['en-US', 'en']
+                        });
+                    """)
             else:
                 print("⚠ Profile not found, using fresh session")
-                browser = p.chromium.launch(headless=False, channel="msedge")
+                browser = p.chromium.launch(
+                    headless=False,
+                    channel="msedge",
+                    args=[
+                        '--disable-blink-features=AutomationControlled'
+                    ],
+                    ignore_default_args=['--enable-automation']
+                )
                 context = browser.new_context()
                 page = context.new_page()
+                
+                # Remove automation detection
+                page.add_init_script("""
+                    Object.defineProperty(navigator, 'webdriver', {
+                        get: () => undefined
+                    });
+                    
+                    window.navigator.chrome = {
+                        runtime: {}
+                    };
+                    
+                    Object.defineProperty(navigator, 'plugins', {
+                        get: () => [1, 2, 3, 4, 5]
+                    });
+                    
+                    Object.defineProperty(navigator, 'languages', {
+                        get: () => ['en-US', 'en']
+                    });
+                """)
         else:
-            browser = p.chromium.launch(headless=False, channel="msedge")
+            browser = p.chromium.launch(
+                headless=False,
+                channel="msedge",
+                args=[
+                    '--disable-blink-features=AutomationControlled'
+                ]
+            )
             context = browser.new_context()
             page = context.new_page()
+            
+            # Remove automation detection
+            page.add_init_script("""
+                Object.defineProperty(navigator, 'webdriver', {
+                    get: () => undefined
+                });
+                
+                window.navigator.chrome = {
+                    runtime: {}
+                };
+                
+                Object.defineProperty(navigator, 'plugins', {
+                    get: () => [1, 2, 3, 4, 5]
+                });
+                
+                Object.defineProperty(navigator, 'languages', {
+                    get: () => ['en-US', 'en']
+                });
+            """)
         
-        print("✓ Browser launched successfully!")
+        print("✓ Browser launched successfully (stealth mode)!")
         
         # Interactive menu loop
         while True:
             show_menu()
-            choice = input("\nEnter your choice (1-5): ").strip()
+            choice = input("\nEnter your choice (1-8): ").strip()
             
             if choice == '1':
                 url = input("\n🔗 Enter website URL (e.g., google.com): ").strip()
@@ -326,6 +617,13 @@ def main():
                     print(f"Navigating to {url}...")
                     page.goto(url)
                     print(f"✓ Loaded: {page.title()}")
+                    
+                    if is_recording:
+                        recorded_actions.append({
+                            'type': 'navigate',
+                            'url': url,
+                            'description': f'Navigate to {url}'
+                        })
                 except Exception as e:
                     print(f"✗ Error: {e}")
             
@@ -350,13 +648,25 @@ def main():
                     print(f"✗ Error: {e}")
             
             elif choice == '5':
+                toggle_recording()
+            
+            elif choice == '6':
+                save_session()
+            
+            elif choice == '7':
+                try:
+                    load_session(page)
+                except Exception as e:
+                    print(f"✗ Error: {e}")
+            
+            elif choice == '8':
                 print("\n👋 Closing browser...")
                 context.close()
                 print("✓ Browser closed. Goodbye!")
                 break
             
             else:
-                print("⚠ Invalid choice. Please enter 1-5.")
+                print("⚠ Invalid choice. Please enter 1-8.")
 
 if __name__ == "__main__":
     main()
