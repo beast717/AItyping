@@ -5,6 +5,8 @@ Interactive browser control script
 
 from playwright.sync_api import sync_playwright
 import os
+import time
+import random
 
 # Global variable to store scanned elements
 page_elements = {}
@@ -80,10 +82,11 @@ def interact_with_element(page):
     print("\n🎯 Element Interaction")
     print("1. Click a button")
     print("2. Click a link")
-    print("3. Fill an input field")
-    print("4. Select from dropdown")
-    print("5. Check/uncheck checkbox")
-    print("6. Back to main menu")
+    print("3. Fill an input field (instant)")
+    print("4. Type in input field (human-like)")
+    print("5. Select from dropdown")
+    print("6. Check/uncheck checkbox")
+    print("7. Back to main menu")
     
     choice = input("\nChoose action: ").strip()
     
@@ -140,6 +143,82 @@ def interact_with_element(page):
             print(f"✗ Error: {e}")
     
     elif choice == '4':
+        if 'inputs' not in page_elements or not page_elements['inputs']:
+            print("⚠ No input fields found on this page!")
+            return
+        index = input(f"Enter input number [0-{len(page_elements['inputs'])-1}] (or 'c' to cancel): ").strip()
+        if index.lower() == 'c':
+            print("Cancelled.")
+            return
+        value = input("Enter text to type: ").strip()
+        speed = input("Enter base typing speed in ms (50-200, default 100): ").strip()
+        typo_chance = input("Enable typos? (y/n, default y): ").strip().lower()
+        
+        try:
+            idx = int(index)
+            base_delay = int(speed) if speed else 100
+            enable_typos = typo_chance != 'n'
+            
+            # Clear field first
+            page_elements['inputs'][idx].clear()
+            
+            # Type character by character with human-like variation
+            print(f"⌨️  Typing '{value}'...", end='', flush=True)
+            for i, char in enumerate(value):
+                # Random typo chance (5% if enabled, skip spaces and first char)
+                if enable_typos and i > 0 and char != ' ' and random.random() < 0.05:
+                    # Make a typo - type a random nearby key
+                    keyboard_nearby = {
+                        'a': 'sqwz', 'b': 'vghn', 'c': 'xdfv', 'd': 'serfcx', 'e': 'wrsd',
+                        'f': 'drtgvc', 'g': 'ftyhbv', 'h': 'gyujnb', 'i': 'uojk', 'j': 'huikm',
+                        'k': 'jiolm', 'l': 'kop', 'm': 'njk', 'n': 'bhjm', 'o': 'iplk',
+                        'p': 'ol', 'q': 'wa', 'r': 'etdf', 's': 'awedxz', 't': 'ryfg',
+                        'u': 'yihj', 'v': 'cfgb', 'w': 'qeas', 'x': 'zsdc', 'y': 'tugh',
+                        'z': 'asx'
+                    }
+                    
+                    typo_char = char
+                    if char.lower() in keyboard_nearby:
+                        nearby_keys = keyboard_nearby[char.lower()]
+                        typo_char = random.choice(nearby_keys)
+                        if char.isupper():
+                            typo_char = typo_char.upper()
+                    
+                    # Type the typo
+                    typo_delay = int(base_delay * random.uniform(0.8, 1.2))
+                    page_elements['inputs'][idx].type(typo_char, delay=typo_delay)
+                    
+                    # Pause (noticing the mistake)
+                    time.sleep(base_delay * random.uniform(0.3, 0.6) / 1000)
+                    
+                    # Delete the typo
+                    page_elements['inputs'][idx].press('Backspace')
+                    time.sleep(base_delay * 0.5 / 1000)
+                
+                # Add random variation: ±40% of base speed
+                variation = random.uniform(-0.4, 0.4)
+                delay = int(base_delay * (1 + variation))
+                
+                # Longer pauses after punctuation and spaces (more human)
+                if char in '.,!?;:':
+                    delay = int(delay * random.uniform(1.5, 2.5))
+                elif char == ' ':
+                    delay = int(delay * random.uniform(1.2, 1.8))
+                
+                # Occasional longer "thinking" pauses (1-2% chance)
+                if random.random() < 0.02:
+                    delay = int(delay * random.uniform(3, 5))
+                
+                page_elements['inputs'][idx].type(char, delay=delay)
+            
+            print(" ✓ Done!")
+            
+        except (ValueError, IndexError):
+            print(f"✗ Invalid input number")
+        except Exception as e:
+            print(f"✗ Error: {e}")
+    
+    elif choice == '5':
         if 'selects' not in page_elements or not page_elements['selects']:
             print("⚠ No dropdown menus found on this page!")
             return
@@ -157,7 +236,7 @@ def interact_with_element(page):
         except Exception as e:
             print(f"✗ Error: {e}")
     
-    elif choice == '5':
+    elif choice == '6':
         if 'checkboxes' not in page_elements or not page_elements['checkboxes']:
             print("⚠ No checkboxes found on this page!")
             return
