@@ -19,6 +19,28 @@ The `automation.py` script provides interactive browser control:
 - **Fresh session option**: Start with a clean browser if needed
 - **Automatic detection**: Finds your Edge profile automatically
 
+### Human-Like Typing
+- **Variable typing speed**: Random delays between keystrokes (±40% variation)
+- **Realistic typos**: Simulates accidental typos based on keyboard layout
+- **Smart pauses**: Longer delays after punctuation, spaces, and newlines
+- **Thinking pauses**: Random occasional pauses (2% chance for 3-5x longer delay)
+- **Customizable settings**: Save your preferred typing speed, typo chance, and pause behavior
+
+### Batch Operations
+- **Batch fill inputs**: Select multiple input fields and fill them with different texts in one go
+- **Batch type textareas**: Select multiple textareas and type with human-like behavior in all of them
+- **Time-saving**: Perfect for forms with multiple rating justifications or comments
+
+### Session Management
+- **Recording mode**: Record your actions as you interact with elements
+- **Session replay**: Save and load sessions to repeat workflows
+- **JSON storage**: Sessions saved in `sessions/` folder
+
+### Stealth Mode
+- **Anti-bot detection**: Spoofs navigator.webdriver and other automation indicators
+- **Profile persistence**: Uses real Edge profile to avoid detection
+- **Human-like behavior**: Random typing variation makes interactions more natural
+
 ### Interactive Menu
 - **Navigate to websites**: Enter any URL (google.com, youtube.com, etc.)
 - **Free browsing**: Use browser normally, script detects navigation

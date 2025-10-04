@@ -101,7 +101,9 @@ def interact_with_element(page):
     print("6. Type in textarea (human-like)")
     print("7. Select from dropdown")
     print("8. Check/uncheck checkbox")
-    print("9. Back to main menu")
+    print("9. 🔄 Batch fill multiple inputs")
+    print("10. 🔄 Batch type in multiple textareas")
+    print("11. Back to main menu")
     
     choice = input("\nChoose action: ").strip()
     
@@ -444,6 +446,166 @@ def interact_with_element(page):
             print(f"✗ Invalid checkbox number")
         except Exception as e:
             print(f"✗ Error: {e}")
+    
+    elif choice == '9':
+        # Batch fill multiple inputs
+        if 'inputs' not in page_elements or not page_elements['inputs']:
+            print("⚠ No input fields found on this page!")
+            return
+        
+        print("\n🔄 Batch Fill Multiple Inputs")
+        indices_input = input(f"Enter input numbers separated by commas (e.g., 0,2,5) [0-{len(page_elements['inputs'])-1}]: ").strip()
+        
+        if not indices_input:
+            print("Cancelled.")
+            return
+        
+        try:
+            indices = [int(x.strip()) for x in indices_input.split(',')]
+            
+            # Collect text for each input
+            input_texts = {}
+            for idx in indices:
+                if 0 <= idx < len(page_elements['inputs']):
+                    text = input(f"Enter text for input [{idx}]: ").strip()
+                    input_texts[idx] = text
+                else:
+                    print(f"⚠ Skipping invalid index: {idx}")
+            
+            # Ask for preferences
+            use_prefs = input(f"\nUse saved preferences for all? (y/n, current: {user_preferences['typing_speed']}ms): ").strip().lower()
+            
+            if use_prefs == 'y':
+                base_delay = user_preferences['typing_speed']
+                enable_typos = user_preferences['enable_typos']
+                print(f"✓ Using preferences: {base_delay}ms, typos: {'on' if enable_typos else 'off'}")
+            else:
+                speed = input("Enter typing speed in ms (50-200, default 100): ").strip()
+                typo_chance = input("Enable typos? (y/n, default y): ").strip().lower()
+                base_delay = int(speed) if speed else 100
+                enable_typos = typo_chance != 'n'
+            
+            # Type in each input
+            print(f"\n⌨️  Typing in {len(input_texts)} inputs...")
+            for idx, text in input_texts.items():
+                print(f"\n[{idx}] Typing: '{text[:50]}...'")
+                page_elements['inputs'][idx].fill(text)
+                print(f"✓ Filled input [{idx}]")
+                time.sleep(0.3)  # Small delay between fields
+            
+            print(f"\n✓ All {len(input_texts)} inputs filled!")
+            
+        except ValueError:
+            print("✗ Invalid input format")
+        except Exception as e:
+            print(f"✗ Error: {e}")
+    
+    elif choice == '10':
+        # Batch type in multiple textareas
+        if 'textareas' not in page_elements or not page_elements['textareas']:
+            print("⚠ No textarea fields found on this page!")
+            return
+        
+        print("\n🔄 Batch Type in Multiple Textareas")
+        indices_input = input(f"Enter textarea numbers separated by commas (e.g., 0,1,2) [0-{len(page_elements['textareas'])-1}]: ").strip()
+        
+        if not indices_input:
+            print("Cancelled.")
+            return
+        
+        try:
+            indices = [int(x.strip()) for x in indices_input.split(',')]
+            
+            # Collect text for each textarea
+            textarea_texts = {}
+            for idx in indices:
+                if 0 <= idx < len(page_elements['textareas']):
+                    print(f"\n--- Textarea [{idx}] ---")
+                    text = input(f"Enter text for textarea [{idx}]: ").strip()
+                    textarea_texts[idx] = text
+                else:
+                    print(f"⚠ Skipping invalid index: {idx}")
+            
+            # Ask for preferences
+            use_prefs = input(f"\nUse saved preferences for all? (y/n, current: {user_preferences['typing_speed']}ms): ").strip().lower()
+            
+            if use_prefs == 'y':
+                base_delay = user_preferences['typing_speed']
+                enable_typos = user_preferences['enable_typos']
+                print(f"✓ Using preferences: {base_delay}ms, typos: {'on' if enable_typos else 'off'}")
+            else:
+                speed = input("Enter typing speed in ms (50-200, default 100): ").strip()
+                typo_chance = input("Enable typos? (y/n, default y): ").strip().lower()
+                base_delay = int(speed) if speed else 100
+                enable_typos = typo_chance != 'n'
+            
+            # Type in each textarea with human-like behavior
+            print(f"\n⌨️  Typing in {len(textarea_texts)} textareas...")
+            for idx, text in textarea_texts.items():
+                print(f"\n[{idx}] Typing: '{text[:50]}...'")
+                
+                # Clear field first
+                page_elements['textareas'][idx].clear()
+                
+                # Type character by character with human-like variation
+                for i, char in enumerate(text):
+                    # Random typo chance
+                    if enable_typos and i > 0 and char != ' ' and random.random() < user_preferences.get('typo_chance', 0.05):
+                        keyboard_nearby = {
+                            'a': 'sqwz', 'b': 'vghn', 'c': 'xdfv', 'd': 'serfcx', 'e': 'wrsd',
+                            'f': 'drtgvc', 'g': 'ftyhbv', 'h': 'gyujnb', 'i': 'uojk', 'j': 'huikm',
+                            'k': 'jiolm', 'l': 'kop', 'm': 'njk', 'n': 'bhjm', 'o': 'iplk',
+                            'p': 'ol', 'q': 'wa', 'r': 'etdf', 's': 'awedxz', 't': 'ryfg',
+                            'u': 'yihj', 'v': 'cfgb', 'w': 'qeas', 'x': 'zsdc', 'y': 'tugh',
+                            'z': 'asx'
+                        }
+                        
+                        typo_char = char
+                        if char.lower() in keyboard_nearby:
+                            nearby_keys = keyboard_nearby[char.lower()]
+                            typo_char = random.choice(nearby_keys)
+                            if char.isupper():
+                                typo_char = typo_char.upper()
+                        
+                        # Type the typo
+                        typo_delay = int(base_delay * random.uniform(0.8, 1.2))
+                        page_elements['textareas'][idx].type(typo_char, delay=typo_delay)
+                        time.sleep(base_delay * random.uniform(0.3, 0.6) / 1000)
+                        page_elements['textareas'][idx].press('Backspace')
+                        time.sleep(base_delay * 0.5 / 1000)
+                    
+                    # Add random variation
+                    variation = random.uniform(-0.4, 0.4)
+                    delay = int(base_delay * (1 + variation))
+                    
+                    # Longer pauses after punctuation and spaces
+                    if user_preferences.get('pause_after_punctuation', True):
+                        if char in '.,!?;:':
+                            delay = int(delay * random.uniform(1.5, 2.5))
+                        elif char == ' ':
+                            delay = int(delay * random.uniform(1.2, 1.8))
+                        elif char == '\n':
+                            delay = int(delay * random.uniform(2.0, 3.0))
+                    
+                    # Occasional thinking pauses
+                    if user_preferences.get('thinking_pauses', True) and random.random() < 0.02:
+                        delay = int(delay * random.uniform(3, 5))
+                    
+                    page_elements['textareas'][idx].type(char, delay=delay)
+                
+                print(f"✓ Typed in textarea [{idx}]")
+                time.sleep(0.5)  # Small delay between textareas
+            
+            print(f"\n✓ All {len(textarea_texts)} textareas completed!")
+            
+        except ValueError:
+            print("✗ Invalid input format")
+        except Exception as e:
+            print(f"✗ Error: {e}")
+    
+    elif choice == '11':
+        # Back to main menu
+        return
 
 def save_preferences():
     """Save user preferences to a file"""
@@ -871,6 +1033,16 @@ def main():
             """)
         
         print("✓ Browser launched successfully (stealth mode)!")
+        
+        # Auto-load default preferences if they exist
+        if os.path.exists('settings/default.json'):
+            try:
+                with open('settings/default.json', 'r') as f:
+                    loaded_prefs = json.load(f)
+                    user_preferences.update(loaded_prefs)
+                print(f"✓ Loaded default preferences (typing speed: {user_preferences['typing_speed']}ms)")
+            except Exception as e:
+                print(f"⚠ Could not load default preferences: {e}")
         
         # Interactive menu loop
         while True:
