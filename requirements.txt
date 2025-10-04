@@ -1,0 +1,5 @@
+# Use latest stable version with better Windows compatibility
+playwright>=1.39.0
+# Alternative: if you still have issues, you can try these instead:
+# playwright==1.39.0
+# playwright==1.38.0
