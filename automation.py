@@ -21,7 +21,11 @@ user_preferences = {
     'enable_typos': True,
     'typo_chance': 0.05,
     'pause_after_punctuation': True,
-    'thinking_pauses': True
+    'thinking_pauses': True,
+    'max_retries': 3,
+    'retry_delay': 1.0,
+    'auto_wait_timeout': 30000,
+    'verify_actions': True
 }
 
 def get_edge_profile_path():
@@ -32,6 +36,130 @@ def get_edge_profile_path():
     if os.path.exists(edge_profile):
         return edge_profile
     return None
+
+def smart_wait_for_element(page, selector, timeout=None):
+    """
+    Intelligently wait for an element to be ready (visible and stable)
+    Returns the element or None if not found
+    """
+    if timeout is None:
+        timeout = user_preferences.get('auto_wait_timeout', 30000)
+    
+    try:
+        # Wait for element to be visible and stable
+        element = page.wait_for_selector(selector, state='visible', timeout=timeout)
+        # Small delay to ensure element is fully loaded
+        time.sleep(0.2)
+        return element
+    except Exception as e:
+        return None
+
+def retry_with_backoff(func, max_retries=None, initial_delay=None, description="Action"):
+    """
+    Retry a function with exponential backoff
+    Returns (success: bool, result: any, error: str)
+    """
+    if max_retries is None:
+        max_retries = user_preferences.get('max_retries', 3)
+    if initial_delay is None:
+        initial_delay = user_preferences.get('retry_delay', 1.0)
+    
+    for attempt in range(max_retries):
+        try:
+            result = func()
+            if user_preferences.get('verify_actions', True):
+                print(f"  ✓ {description} succeeded")
+            return (True, result, None)
+        except Exception as e:
+            error_msg = str(e)
+            
+            if attempt < max_retries - 1:
+                delay = initial_delay * (2 ** attempt)  # Exponential backoff
+                print(f"  ⚠ Attempt {attempt + 1} failed: {error_msg}")
+                print(f"  🔄 Retrying in {delay:.1f}s...")
+                time.sleep(delay)
+            else:
+                print(f"  ✗ {description} failed after {max_retries} attempts: {error_msg}")
+                return (False, None, error_msg)
+    
+    return (False, None, "Max retries exceeded")
+
+def safe_click(element, description="Click"):
+    """
+    Safely click an element with retry and error recovery
+    """
+    def click_action():
+        # Ensure element is visible and clickable
+        element.wait_for_element_state('visible', timeout=5000)
+        element.scroll_into_view_if_needed()
+        time.sleep(0.1)
+        element.click()
+        return True
+    
+    return retry_with_backoff(click_action, description=description)
+
+def safe_fill(element, value, description="Fill"):
+    """
+    Safely fill an element with retry and error recovery
+    """
+    def fill_action():
+        element.wait_for_element_state('visible', timeout=5000)
+        element.scroll_into_view_if_needed()
+        element.clear()
+        element.fill(value)
+        
+        # Verify the value was set
+        if user_preferences.get('verify_actions', True):
+            actual_value = element.input_value()
+            if actual_value != value:
+                raise Exception(f"Verification failed: expected '{value}', got '{actual_value}'")
+        
+        return True
+    
+    return retry_with_backoff(fill_action, description=description)
+
+def safe_type(element, value, delay=100, description="Type"):
+    """
+    Safely type into an element with retry and error recovery
+    """
+    def type_action():
+        element.wait_for_element_state('visible', timeout=5000)
+        element.scroll_into_view_if_needed()
+        element.clear()
+        
+        # Type with human-like behavior
+        for char in value:
+            element.type(char, delay=delay)
+        
+        # Verify the value was set
+        if user_preferences.get('verify_actions', True):
+            time.sleep(0.2)
+            actual_value = element.input_value()
+            if actual_value != value:
+                raise Exception(f"Verification failed: expected '{value}', got '{actual_value}'")
+        
+        return True
+    
+    return retry_with_backoff(type_action, description=description)
+
+def handle_common_errors(error, element_description="element"):
+    """
+    Provide helpful error messages and recovery suggestions
+    """
+    error_str = str(error).lower()
+    
+    if 'timeout' in error_str:
+        return f"⏱️ Timeout: {element_description} took too long to load. Try increasing timeout or check your internet connection."
+    elif 'not found' in error_str or 'no element' in error_str:
+        return f"🔍 Not found: {element_description} doesn't exist on the page. The page structure may have changed."
+    elif 'detached' in error_str or 'stale' in error_str:
+        return f"🔄 Stale element: {element_description} changed. The page was updated. Retrying should fix this."
+    elif 'not visible' in error_str:
+        return f"👁️ Hidden: {element_description} is not visible. It may be hidden or off-screen."
+    elif 'not clickable' in error_str:
+        return f"🚫 Not clickable: {element_description} is blocked by another element or disabled."
+    else:
+        return f"❌ Error with {element_description}: {error}"
 
 def scan_page_elements(page):
     """Scan and display interactive elements on the current page"""
@@ -117,19 +245,21 @@ def interact_with_element(page):
             return
         try:
             idx = int(index)
-            page_elements['buttons'][idx].click()
-            print(f"✓ Clicked button [{idx}]")
+            success, _, error = safe_click(page_elements['buttons'][idx], f"Click button [{idx}]")
             
-            if is_recording:
-                recorded_actions.append({
-                    'type': 'click_button',
-                    'index': idx,
-                    'description': f'Click button {idx}'
-                })
+            if success:
+                if is_recording:
+                    recorded_actions.append({
+                        'type': 'click_button',
+                        'index': idx,
+                        'description': f'Click button {idx}'
+                    })
+            else:
+                print(handle_common_errors(error, f"button [{idx}]"))
         except (ValueError, IndexError):
             print(f"✗ Invalid button number")
         except Exception as e:
-            print(f"✗ Error: {e}")
+            print(handle_common_errors(e, f"button operation"))
     
     elif choice == '2':
         if 'links' not in page_elements or not page_elements['links']:
@@ -141,19 +271,21 @@ def interact_with_element(page):
             return
         try:
             idx = int(index)
-            page_elements['links'][idx].click()
-            print(f"✓ Clicked link [{idx}]")
+            success, _, error = safe_click(page_elements['links'][idx], f"Click link [{idx}]")
             
-            if is_recording:
-                recorded_actions.append({
-                    'type': 'click_link',
-                    'index': idx,
-                    'description': f'Click link {idx}'
-                })
+            if success:
+                if is_recording:
+                    recorded_actions.append({
+                        'type': 'click_link',
+                        'index': idx,
+                        'description': f'Click link {idx}'
+                    })
+            else:
+                print(handle_common_errors(error, f"link [{idx}]"))
         except (ValueError, IndexError):
             print(f"✗ Invalid link number")
         except Exception as e:
-            print(f"✗ Error: {e}")
+            print(handle_common_errors(e, f"link operation"))
     
     elif choice == '3':
         if 'inputs' not in page_elements or not page_elements['inputs']:
@@ -166,20 +298,22 @@ def interact_with_element(page):
         value = input("Enter value to fill: ").strip()
         try:
             idx = int(index)
-            page_elements['inputs'][idx].fill(value)
-            print(f"✓ Filled input [{idx}] with '{value}'")
+            success, _, error = safe_fill(page_elements['inputs'][idx], value, f"Fill input [{idx}]")
             
-            if is_recording:
-                recorded_actions.append({
-                    'type': 'fill_input',
-                    'index': idx,
-                    'value': value,
-                    'description': f'Fill input {idx}'
-                })
+            if success:
+                if is_recording:
+                    recorded_actions.append({
+                        'type': 'fill_input',
+                        'index': idx,
+                        'value': value,
+                        'description': f'Fill input {idx}'
+                    })
+            else:
+                print(handle_common_errors(error, f"input [{idx}]"))
         except (ValueError, IndexError):
             print(f"✗ Invalid input number")
         except Exception as e:
-            print(f"✗ Error: {e}")
+            print(handle_common_errors(e, f"input operation"))
     
     elif choice == '4':
         if 'inputs' not in page_elements or not page_elements['inputs']:
@@ -408,20 +542,29 @@ def interact_with_element(page):
         value = input("Enter option value or text: ").strip()
         try:
             idx = int(index)
-            page_elements['selects'][idx].select_option(value)
-            print(f"✓ Selected '{value}' in dropdown [{idx}]")
             
-            if is_recording:
-                recorded_actions.append({
-                    'type': 'select_option',
-                    'index': idx,
-                    'value': value,
-                    'description': f'Select dropdown {idx}'
-                })
+            def select_action():
+                page_elements['selects'][idx].wait_for_element_state('visible', timeout=5000)
+                page_elements['selects'][idx].scroll_into_view_if_needed()
+                page_elements['selects'][idx].select_option(value)
+                return True
+            
+            success, _, error = retry_with_backoff(select_action, description=f"Select dropdown [{idx}]")
+            
+            if success:
+                if is_recording:
+                    recorded_actions.append({
+                        'type': 'select_option',
+                        'index': idx,
+                        'value': value,
+                        'description': f'Select dropdown {idx}'
+                    })
+            else:
+                print(handle_common_errors(error, f"dropdown [{idx}]"))
         except (ValueError, IndexError):
             print(f"✗ Invalid dropdown number")
         except Exception as e:
-            print(f"✗ Error: {e}")
+            print(handle_common_errors(e, f"dropdown operation"))
     
     elif choice == '8':
         if 'checkboxes' not in page_elements or not page_elements['checkboxes']:
@@ -433,19 +576,28 @@ def interact_with_element(page):
             return
         try:
             idx = int(index)
-            page_elements['checkboxes'][idx].check()
-            print(f"✓ Checked checkbox [{idx}]")
             
-            if is_recording:
-                recorded_actions.append({
-                    'type': 'check_checkbox',
-                    'index': idx,
-                    'description': f'Check checkbox {idx}'
-                })
+            def check_action():
+                page_elements['checkboxes'][idx].wait_for_element_state('visible', timeout=5000)
+                page_elements['checkboxes'][idx].scroll_into_view_if_needed()
+                page_elements['checkboxes'][idx].check()
+                return True
+            
+            success, _, error = retry_with_backoff(check_action, description=f"Check checkbox [{idx}]")
+            
+            if success:
+                if is_recording:
+                    recorded_actions.append({
+                        'type': 'check_checkbox',
+                        'index': idx,
+                        'description': f'Check checkbox {idx}'
+                    })
+            else:
+                print(handle_common_errors(error, f"checkbox [{idx}]"))
         except (ValueError, IndexError):
             print(f"✗ Invalid checkbox number")
         except Exception as e:
-            print(f"✗ Error: {e}")
+            print(handle_common_errors(e, f"checkbox operation"))
     
     elif choice == '9':
         # Batch fill multiple inputs
@@ -646,6 +798,50 @@ def save_preferences():
     if think_input in ['y', 'n']:
         user_preferences['thinking_pauses'] = think_input == 'y'
     
+    print("\n🔄 Intelligent Automation Settings")
+    print("-" * 50)
+    
+    # Max retries
+    retry_input = input(f"Max retries for failed actions (1-10, current: {user_preferences['max_retries']}): ").strip()
+    if retry_input:
+        try:
+            retries = int(retry_input)
+            if 1 <= retries <= 10:
+                user_preferences['max_retries'] = retries
+            else:
+                print("⚠ Invalid value, keeping current")
+        except ValueError:
+            print("⚠ Invalid value, keeping current")
+    
+    # Retry delay
+    delay_input = input(f"Initial retry delay in seconds (0.5-5.0, current: {user_preferences['retry_delay']}): ").strip()
+    if delay_input:
+        try:
+            delay = float(delay_input)
+            if 0.5 <= delay <= 5.0:
+                user_preferences['retry_delay'] = delay
+            else:
+                print("⚠ Invalid value, keeping current")
+        except ValueError:
+            print("⚠ Invalid value, keeping current")
+    
+    # Auto-wait timeout
+    timeout_input = input(f"Auto-wait timeout in ms (5000-60000, current: {user_preferences['auto_wait_timeout']}): ").strip()
+    if timeout_input:
+        try:
+            timeout = int(timeout_input)
+            if 5000 <= timeout <= 60000:
+                user_preferences['auto_wait_timeout'] = timeout
+            else:
+                print("⚠ Invalid value, keeping current")
+        except ValueError:
+            print("⚠ Invalid value, keeping current")
+    
+    # Verify actions
+    verify_input = input(f"Verify actions succeed? (y/n, current: {'yes' if user_preferences['verify_actions'] else 'no'}): ").strip().lower()
+    if verify_input in ['y', 'n']:
+        user_preferences['verify_actions'] = verify_input == 'y'
+    
     # Save to file
     if not os.path.exists('settings'):
         os.makedirs('settings')
@@ -667,6 +863,11 @@ def save_preferences():
             print(f"  • Typo chance: {int(user_preferences['typo_chance']*100)}%")
         print(f"  • Smart pauses: {'Enabled' if user_preferences['pause_after_punctuation'] else 'Disabled'}")
         print(f"  • Thinking pauses: {'Enabled' if user_preferences['thinking_pauses'] else 'Disabled'}")
+        print(f"\n🔄 Intelligent Automation:")
+        print(f"  • Max retries: {user_preferences['max_retries']}")
+        print(f"  • Retry delay: {user_preferences['retry_delay']}s")
+        print(f"  • Auto-wait timeout: {user_preferences['auto_wait_timeout']}ms")
+        print(f"  • Verify actions: {'Enabled' if user_preferences['verify_actions'] else 'Disabled'}")
     except Exception as e:
         print(f"✗ Error saving preferences: {e}")
 
@@ -711,6 +912,11 @@ def load_preferences():
             print(f"  • Typo chance: {int(user_preferences['typo_chance']*100)}%")
         print(f"  • Smart pauses: {'Enabled' if user_preferences['pause_after_punctuation'] else 'Disabled'}")
         print(f"  • Thinking pauses: {'Enabled' if user_preferences['thinking_pauses'] else 'Disabled'}")
+        print(f"\n🔄 Intelligent Automation:")
+        print(f"  • Max retries: {user_preferences.get('max_retries', 3)}")
+        print(f"  • Retry delay: {user_preferences.get('retry_delay', 1.0)}s")
+        print(f"  • Auto-wait timeout: {user_preferences.get('auto_wait_timeout', 30000)}ms")
+        print(f"  • Verify actions: {'Enabled' if user_preferences.get('verify_actions', True) else 'Disabled'}")
         
     except (ValueError, IndexError):
         print("✗ Invalid profile number")
@@ -729,6 +935,11 @@ def view_current_preferences():
         print(f"  • Typo chance: {int(user_preferences['typo_chance']*100)}%")
     print(f"  • Smart pauses: {'Enabled' if user_preferences['pause_after_punctuation'] else 'Disabled'}")
     print(f"  • Thinking pauses: {'Enabled' if user_preferences['thinking_pauses'] else 'Disabled'}")
+    print(f"\n🔄 Intelligent Automation:")
+    print(f"  • Max retries: {user_preferences.get('max_retries', 3)}")
+    print(f"  • Retry delay: {user_preferences.get('retry_delay', 1.0)}s")
+    print(f"  • Auto-wait timeout: {user_preferences.get('auto_wait_timeout', 30000)}ms")
+    print(f"  • Verify actions: {'Enabled' if user_preferences.get('verify_actions', True) else 'Disabled'}")
     print("=" * 50)
 
 def save_session():

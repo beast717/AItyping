@@ -41,6 +41,36 @@ The `automation.py` script provides interactive browser control:
 - **Profile persistence**: Uses real Edge profile to avoid detection
 - **Human-like behavior**: Random typing variation makes interactions more natural
 
+### 🧠 Intelligent Automation (NEW!)
+- **Smart Retry**: Automatically retries failed actions with exponential backoff (configurable 1-10 attempts)
+- **Auto-wait for elements**: Waits for elements to be visible and stable before interacting
+- **Error recovery**: Detects and handles common errors (timeout, element not found, stale elements)
+- **Success verification**: Verifies that actions completed successfully (text entered, elements clicked)
+- **Helpful error messages**: Clear descriptions of what went wrong and how to fix it
+- **Configurable settings**: Customize max retries, retry delay, and auto-wait timeout
+- **Intelligent waiting**: No more fixed delays - waits only as long as needed
+
+#### How It Works:
+When you click a button, fill a form, or interact with any element, the script will:
+1. **Wait** for the element to be ready (visible and stable)
+2. **Scroll** the element into view if needed
+3. **Try** to perform the action
+4. **Verify** the action succeeded (for form fills)
+5. **Retry** automatically if it fails (with increasing delays)
+6. **Report** exactly what happened with helpful error messages
+
+#### Configuration Options:
+- `max_retries`: How many times to retry failed actions (default: 3)
+- `retry_delay`: Initial delay between retries in seconds (default: 1.0s, uses exponential backoff)
+- `auto_wait_timeout`: Maximum time to wait for elements in milliseconds (default: 30000ms)
+- `verify_actions`: Whether to verify actions succeeded (default: enabled)
+
+### Session Management
+- **Recording mode**: Record your actions as you interact with elements
+- **Session replay**: Save and load sessions to repeat workflows
+- **JSON storage**: Sessions saved in `sessions/` folder
+- **Auto-load preferences**: Default preferences automatically loaded on startup
+
 ### Interactive Menu
 - **Navigate to websites**: Enter any URL (google.com, youtube.com, etc.)
 - **Free browsing**: Use browser normally, script detects navigation
