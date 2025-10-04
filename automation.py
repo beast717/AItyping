@@ -15,6 +15,14 @@ page_elements = {}
 # Global variable to store recorded actions
 recorded_actions = []
 is_recording = False
+# Global variable to store user preferences
+user_preferences = {
+    'typing_speed': 100,
+    'enable_typos': True,
+    'typo_chance': 0.05,
+    'pause_after_punctuation': True,
+    'thinking_pauses': True
+}
 
 def get_edge_profile_path():
     """Get the default Edge profile path for the current user"""
@@ -180,13 +188,22 @@ def interact_with_element(page):
             print("Cancelled.")
             return
         value = input("Enter text to type: ").strip()
-        speed = input("Enter base typing speed in ms (50-200, default 100): ").strip()
-        typo_chance = input("Enable typos? (y/n, default y): ").strip().lower()
+        
+        # Ask if user wants to use saved preferences
+        use_prefs = input(f"Use saved preferences? (y/n, current speed: {user_preferences['typing_speed']}ms): ").strip().lower()
+        
+        if use_prefs == 'y':
+            base_delay = user_preferences['typing_speed']
+            enable_typos = user_preferences['enable_typos']
+            print(f"✓ Using preferences: {base_delay}ms, typos: {'on' if enable_typos else 'off'}")
+        else:
+            speed = input("Enter base typing speed in ms (50-200, default 100): ").strip()
+            typo_chance = input("Enable typos? (y/n, default y): ").strip().lower()
+            base_delay = int(speed) if speed else 100
+            enable_typos = typo_chance != 'n'
         
         try:
             idx = int(index)
-            base_delay = int(speed) if speed else 100
-            enable_typos = typo_chance != 'n'
             
             # Clear field first
             page_elements['inputs'][idx].clear()
@@ -291,13 +308,22 @@ def interact_with_element(page):
             print("Cancelled.")
             return
         value = input("Enter text to type: ").strip()
-        speed = input("Enter base typing speed in ms (50-200, default 100): ").strip()
-        typo_chance = input("Enable typos? (y/n, default y): ").strip().lower()
+        
+        # Ask if user wants to use saved preferences
+        use_prefs = input(f"Use saved preferences? (y/n, current speed: {user_preferences['typing_speed']}ms): ").strip().lower()
+        
+        if use_prefs == 'y':
+            base_delay = user_preferences['typing_speed']
+            enable_typos = user_preferences['enable_typos']
+            print(f"✓ Using preferences: {base_delay}ms, typos: {'on' if enable_typos else 'off'}")
+        else:
+            speed = input("Enter base typing speed in ms (50-200, default 100): ").strip()
+            typo_chance = input("Enable typos? (y/n, default y): ").strip().lower()
+            base_delay = int(speed) if speed else 100
+            enable_typos = typo_chance != 'n'
         
         try:
             idx = int(index)
-            base_delay = int(speed) if speed else 100
-            enable_typos = typo_chance != 'n'
             
             # Clear field first
             page_elements['textareas'][idx].clear()
@@ -418,6 +444,130 @@ def interact_with_element(page):
             print(f"✗ Invalid checkbox number")
         except Exception as e:
             print(f"✗ Error: {e}")
+
+def save_preferences():
+    """Save user preferences to a file"""
+    global user_preferences
+    
+    print("\n⚙️  Configure Your Preferences")
+    print("=" * 50)
+    
+    # Typing speed
+    speed_input = input(f"Typing speed in ms (50-200, current: {user_preferences['typing_speed']}): ").strip()
+    if speed_input:
+        try:
+            user_preferences['typing_speed'] = int(speed_input)
+        except ValueError:
+            print("⚠ Invalid speed, keeping current value")
+    
+    # Enable typos
+    typo_input = input(f"Enable typos? (y/n, current: {'yes' if user_preferences['enable_typos'] else 'no'}): ").strip().lower()
+    if typo_input in ['y', 'n']:
+        user_preferences['enable_typos'] = typo_input == 'y'
+    
+    # Typo chance
+    if user_preferences['enable_typos']:
+        chance_input = input(f"Typo chance 1-10% (current: {int(user_preferences['typo_chance']*100)}%): ").strip()
+        if chance_input:
+            try:
+                user_preferences['typo_chance'] = int(chance_input) / 100
+            except ValueError:
+                print("⚠ Invalid chance, keeping current value")
+    
+    # Pause after punctuation
+    punct_input = input(f"Smart pauses after punctuation? (y/n, current: {'yes' if user_preferences['pause_after_punctuation'] else 'no'}): ").strip().lower()
+    if punct_input in ['y', 'n']:
+        user_preferences['pause_after_punctuation'] = punct_input == 'y'
+    
+    # Thinking pauses
+    think_input = input(f"Random thinking pauses? (y/n, current: {'yes' if user_preferences['thinking_pauses'] else 'no'}): ").strip().lower()
+    if think_input in ['y', 'n']:
+        user_preferences['thinking_pauses'] = think_input == 'y'
+    
+    # Save to file
+    if not os.path.exists('settings'):
+        os.makedirs('settings')
+    
+    profile_name = input("\nSave as profile name (e.g., 'fast', 'careful', 'default'): ").strip()
+    if not profile_name:
+        profile_name = 'default'
+    
+    filepath = f"settings/{profile_name}.json"
+    
+    try:
+        with open(filepath, 'w') as f:
+            json.dump(user_preferences, f, indent=2)
+        print(f"✓ Preferences saved to '{filepath}'")
+        print(f"\n📋 Current Settings:")
+        print(f"  • Typing speed: {user_preferences['typing_speed']}ms")
+        print(f"  • Typos: {'Enabled' if user_preferences['enable_typos'] else 'Disabled'}")
+        if user_preferences['enable_typos']:
+            print(f"  • Typo chance: {int(user_preferences['typo_chance']*100)}%")
+        print(f"  • Smart pauses: {'Enabled' if user_preferences['pause_after_punctuation'] else 'Disabled'}")
+        print(f"  • Thinking pauses: {'Enabled' if user_preferences['thinking_pauses'] else 'Disabled'}")
+    except Exception as e:
+        print(f"✗ Error saving preferences: {e}")
+
+def load_preferences():
+    """Load user preferences from a file"""
+    global user_preferences
+    
+    if not os.path.exists('settings'):
+        print("⚠ No settings folder found!")
+        return
+    
+    # List available profiles
+    profiles = [f for f in os.listdir('settings') if f.endswith('.json')]
+    
+    if not profiles:
+        print("⚠ No saved profiles found!")
+        return
+    
+    print("\n📁 Available Profiles:")
+    for i, profile in enumerate(profiles):
+        profile_name = profile.replace('.json', '')
+        print(f"  [{i}] {profile_name}")
+    
+    choice = input(f"\nEnter profile number [0-{len(profiles)-1}] (or 'c' to cancel): ").strip()
+    
+    if choice.lower() == 'c':
+        print("Cancelled.")
+        return
+    
+    try:
+        idx = int(choice)
+        filepath = f"settings/{profiles[idx]}"
+        
+        with open(filepath, 'r') as f:
+            user_preferences = json.load(f)
+        
+        print(f"✓ Loaded profile: {profiles[idx].replace('.json', '')}")
+        print(f"\n📋 Current Settings:")
+        print(f"  • Typing speed: {user_preferences['typing_speed']}ms")
+        print(f"  • Typos: {'Enabled' if user_preferences['enable_typos'] else 'Disabled'}")
+        if user_preferences['enable_typos']:
+            print(f"  • Typo chance: {int(user_preferences['typo_chance']*100)}%")
+        print(f"  • Smart pauses: {'Enabled' if user_preferences['pause_after_punctuation'] else 'Disabled'}")
+        print(f"  • Thinking pauses: {'Enabled' if user_preferences['thinking_pauses'] else 'Disabled'}")
+        
+    except (ValueError, IndexError):
+        print("✗ Invalid profile number")
+    except Exception as e:
+        print(f"✗ Error loading preferences: {e}")
+
+def view_current_preferences():
+    """Display current preferences"""
+    global user_preferences
+    
+    print(f"\n📋 Current Settings:")
+    print("=" * 50)
+    print(f"  • Typing speed: {user_preferences['typing_speed']}ms")
+    print(f"  • Typos: {'Enabled' if user_preferences['enable_typos'] else 'Disabled'}")
+    if user_preferences['enable_typos']:
+        print(f"  • Typo chance: {int(user_preferences['typo_chance']*100)}%")
+    print(f"  • Smart pauses: {'Enabled' if user_preferences['pause_after_punctuation'] else 'Disabled'}")
+    print(f"  • Thinking pauses: {'Enabled' if user_preferences['thinking_pauses'] else 'Disabled'}")
+    print("=" * 50)
 
 def save_session():
     """Save recorded actions to a file"""
@@ -566,7 +716,10 @@ def show_menu():
     print("5. Toggle recording (save workflow)")
     print("6. Save session")
     print("7. Load & replay session")
-    print("8. Close browser and exit")
+    print("8. ⚙️  Save preferences")
+    print("9. 📂 Load preferences")
+    print("10. 📋 View current preferences")
+    print("11. Close browser and exit")
     print("="*50)
 
 def main():
@@ -722,7 +875,7 @@ def main():
         # Interactive menu loop
         while True:
             show_menu()
-            choice = input("\nEnter your choice (1-8): ").strip()
+            choice = input("\nEnter your choice (1-11): ").strip()
             
             if choice == '1':
                 url = input("\n🔗 Enter website URL (e.g., google.com): ").strip()
@@ -775,13 +928,22 @@ def main():
                     print(f"✗ Error: {e}")
             
             elif choice == '8':
+                save_preferences()
+            
+            elif choice == '9':
+                load_preferences()
+            
+            elif choice == '10':
+                view_current_preferences()
+            
+            elif choice == '11':
                 print("\n👋 Closing browser...")
                 context.close()
                 print("✓ Browser closed. Goodbye!")
                 break
             
             else:
-                print("⚠ Invalid choice. Please enter 1-8.")
+                print("⚠ Invalid choice. Please enter 1-11.")
 
 if __name__ == "__main__":
     main()
