@@ -9,6 +9,12 @@ import time
 import random
 import json
 from datetime import datetime
+try:
+    import pyperclip
+    CLIPBOARD_AVAILABLE = True
+except ImportError:
+    CLIPBOARD_AVAILABLE = False
+    print("⚠ pyperclip not installed. Clipboard features disabled. Install with: pip install pyperclip")
 
 # Global variable to store scanned elements
 page_elements = {}
@@ -25,8 +31,19 @@ user_preferences = {
     'max_retries': 3,
     'retry_delay': 1.0,
     'auto_wait_timeout': 30000,
-    'verify_actions': True
+    'verify_actions': True,
+    'auto_scan': True,
+    'last_url': ''
 }
+
+def get_clipboard_text():
+    """Get text from clipboard if available"""
+    if CLIPBOARD_AVAILABLE:
+        try:
+            return pyperclip.paste()
+        except Exception:
+            return None
+    return None
 
 def get_edge_profile_path():
     """Get the default Edge profile path for the current user"""
@@ -217,8 +234,11 @@ def interact_with_element(page):
     global page_elements, recorded_actions, is_recording
     
     if not page_elements:
-        print("\n⚠ Please scan the page first (Option 3) to see available elements!")
-        return
+        print("\n🔍 No elements found. Auto-scanning page...")
+        scan_page_elements(page)
+        if not page_elements:
+            print("\n⚠ No interactive elements found on this page!")
+            return
     
     print("\n🎯 Element Interaction")
     print("1. Click a button")
@@ -295,7 +315,17 @@ def interact_with_element(page):
         if index.lower() == 'c':
             print("Cancelled.")
             return
-        value = input("Enter value to fill: ").strip()
+        
+        # Check clipboard
+        clipboard_text = get_clipboard_text()
+        if clipboard_text:
+            use_clipboard = input(f"📋 Clipboard contains: '{clipboard_text[:50]}...' Use it? (y/n): ").strip().lower()
+            if use_clipboard == 'y':
+                value = clipboard_text
+            else:
+                value = input("Enter value to fill: ").strip()
+        else:
+            value = input("Enter value to fill: ").strip()
         try:
             idx = int(index)
             success, _, error = safe_fill(page_elements['inputs'][idx], value, f"Fill input [{idx}]")
@@ -323,7 +353,17 @@ def interact_with_element(page):
         if index.lower() == 'c':
             print("Cancelled.")
             return
-        value = input("Enter text to type: ").strip()
+        
+        # Check clipboard
+        clipboard_text = get_clipboard_text()
+        if clipboard_text:
+            use_clipboard = input(f"📋 Clipboard contains: '{clipboard_text[:50]}...' Use it? (y/n): ").strip().lower()
+            if use_clipboard == 'y':
+                value = clipboard_text
+            else:
+                value = input("Enter text to type: ").strip()
+        else:
+            value = input("Enter text to type: ").strip()
         
         # Ask if user wants to use saved preferences
         use_prefs = input(f"Use saved preferences? (y/n, current speed: {user_preferences['typing_speed']}ms): ").strip().lower()
@@ -417,7 +457,17 @@ def interact_with_element(page):
         if index.lower() == 'c':
             print("Cancelled.")
             return
-        value = input("Enter value to fill: ").strip()
+        
+        # Check clipboard
+        clipboard_text = get_clipboard_text()
+        if clipboard_text:
+            use_clipboard = input(f"📋 Clipboard contains: '{clipboard_text[:50]}...' Use it? (y/n): ").strip().lower()
+            if use_clipboard == 'y':
+                value = clipboard_text
+            else:
+                value = input("Enter value to fill: ").strip()
+        else:
+            value = input("Enter value to fill: ").strip()
         try:
             idx = int(index)
             page_elements['textareas'][idx].fill(value)
@@ -443,7 +493,17 @@ def interact_with_element(page):
         if index.lower() == 'c':
             print("Cancelled.")
             return
-        value = input("Enter text to type: ").strip()
+        
+        # Check clipboard
+        clipboard_text = get_clipboard_text()
+        if clipboard_text:
+            use_clipboard = input(f"📋 Clipboard contains: '{clipboard_text[:50]}...' Use it? (y/n): ").strip().lower()
+            if use_clipboard == 'y':
+                value = clipboard_text
+            else:
+                value = input("Enter text to type: ").strip()
+        else:
+            value = input("Enter text to type: ").strip()
         
         # Ask if user wants to use saved preferences
         use_prefs = input(f"Use saved preferences? (y/n, current speed: {user_preferences['typing_speed']}ms): ").strip().lower()
@@ -842,6 +902,11 @@ def save_preferences():
     if verify_input in ['y', 'n']:
         user_preferences['verify_actions'] = verify_input == 'y'
     
+    # Auto-scan after navigation
+    auto_scan_input = input(f"Auto-scan after navigation? (y/n, current: {'yes' if user_preferences.get('auto_scan', True) else 'no'}): ").strip().lower()
+    if auto_scan_input in ['y', 'n']:
+        user_preferences['auto_scan'] = auto_scan_input == 'y'
+    
     # Save to file
     if not os.path.exists('settings'):
         os.makedirs('settings')
@@ -868,6 +933,7 @@ def save_preferences():
         print(f"  • Retry delay: {user_preferences['retry_delay']}s")
         print(f"  • Auto-wait timeout: {user_preferences['auto_wait_timeout']}ms")
         print(f"  • Verify actions: {'Enabled' if user_preferences['verify_actions'] else 'Disabled'}")
+        print(f"  • Auto-scan pages: {'Enabled' if user_preferences.get('auto_scan', True) else 'Disabled'}")
     except Exception as e:
         print(f"✗ Error saving preferences: {e}")
 
@@ -917,6 +983,7 @@ def load_preferences():
         print(f"  • Retry delay: {user_preferences.get('retry_delay', 1.0)}s")
         print(f"  • Auto-wait timeout: {user_preferences.get('auto_wait_timeout', 30000)}ms")
         print(f"  • Verify actions: {'Enabled' if user_preferences.get('verify_actions', True) else 'Disabled'}")
+        print(f"  • Auto-scan pages: {'Enabled' if user_preferences.get('auto_scan', True) else 'Disabled'}")
         
     except (ValueError, IndexError):
         print("✗ Invalid profile number")
@@ -940,6 +1007,7 @@ def view_current_preferences():
     print(f"  • Retry delay: {user_preferences.get('retry_delay', 1.0)}s")
     print(f"  • Auto-wait timeout: {user_preferences.get('auto_wait_timeout', 30000)}ms")
     print(f"  • Verify actions: {'Enabled' if user_preferences.get('verify_actions', True) else 'Disabled'}")
+    print(f"  • Auto-scan pages: {'Enabled' if user_preferences.get('auto_scan', True) else 'Disabled'}")
     print("=" * 50)
 
 def save_session():
@@ -1255,6 +1323,24 @@ def main():
             except Exception as e:
                 print(f"⚠ Could not load default preferences: {e}")
         
+        # Offer to resume last URL
+        last_url = user_preferences.get('last_url', '')
+        if last_url:
+            resume = input(f"\n🔖 Resume last session? ({last_url}) (y/n): ").strip().lower()
+            if resume == 'y':
+                try:
+                    print(f"Navigating to {last_url}...")
+                    page.goto(last_url)
+                    print(f"✓ Loaded: {page.title()}")
+                    
+                    # Auto-scan if enabled
+                    if user_preferences.get('auto_scan', True):
+                        print("\n🔍 Auto-scanning page elements...")
+                        time.sleep(0.5)
+                        scan_page_elements(page)
+                except Exception as e:
+                    print(f"⚠ Could not load last URL: {e}")
+        
         # Interactive menu loop
         while True:
             show_menu()
@@ -1268,6 +1354,15 @@ def main():
                     print(f"Navigating to {url}...")
                     page.goto(url)
                     print(f"✓ Loaded: {page.title()}")
+                    
+                    # Save last URL
+                    user_preferences['last_url'] = url
+                    
+                    # Auto-scan if enabled
+                    if user_preferences.get('auto_scan', True):
+                        print("\n🔍 Auto-scanning page elements...")
+                        time.sleep(0.5)  # Small delay to ensure page is fully loaded
+                        scan_page_elements(page)
                     
                     if is_recording:
                         recorded_actions.append({

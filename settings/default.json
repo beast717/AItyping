@@ -3,5 +3,11 @@
   "enable_typos": true,
   "typo_chance": 0.05,
   "pause_after_punctuation": true,
-  "thinking_pauses": true
+  "thinking_pauses": true,
+  "max_retries": 3,
+  "retry_delay": 1.0,
+  "auto_wait_timeout": 30000,
+  "verify_actions": true,
+  "auto_scan": true,
+  "last_url": ""
 }

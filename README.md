@@ -48,7 +48,37 @@ The `automation.py` script provides interactive browser control:
 - **Success verification**: Verifies that actions completed successfully (text entered, elements clicked)
 - **Helpful error messages**: Clear descriptions of what went wrong and how to fix it
 - **Configurable settings**: Customize max retries, retry delay, and auto-wait timeout
-- **Intelligent waiting**: No more fixed delays - waits only as long as needed
+
+### ✨ Seamless Workflow (NEWEST!)
+- **📋 Clipboard Integration**: Automatically detects clipboard content and offers to paste when filling fields
+- **🔍 Auto-scan Pages**: Automatically scans page elements after navigating to a new URL
+- **🔖 Session Resume**: Remembers your last visited URL and offers to resume where you left off
+- **⚡ Quick Start**: Jump right back into your work without manual scanning
+
+## How to Use the New Features
+
+### 📋 Clipboard Integration
+1. Copy any text to your clipboard (Ctrl+C)
+2. When filling an input/textarea, the script will detect your clipboard
+3. It will ask: "📋 Clipboard contains: 'your text...' Use it? (y/n)"
+4. Press 'y' to paste instantly, or 'n' to type manually
+5. Works with all text input operations (fill, type, batch)
+
+### 🔍 Auto-Scan After Navigation
+1. Navigate to any website (Menu option 1)
+2. The page automatically scans for elements when loaded
+3. No need to manually select "Scan page elements"
+4. You can immediately interact with elements
+5. Toggle this feature on/off in preferences (Menu option 8)
+
+### 🔖 Session Resume
+1. On startup, if you visited a URL in your last session, you'll see:
+   "🔖 Resume last session? (https://example.com) (y/n)"
+2. Press 'y' to instantly navigate to that page with auto-scan
+3. Press 'n' to start fresh
+4. Your last URL is saved automatically in preferences
+
+## Intelligent Automation Features
 
 #### How It Works:
 When you click a button, fill a form, or interact with any element, the script will:
