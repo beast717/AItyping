@@ -63,6 +63,16 @@ The `automation.py` script provides interactive browser control:
 - **Smart Fallback**: Helpful error messages if elements can't be found
 - **No Index Needed**: Find elements without memorizing numerical indices
 
+### 📋 Smart Form Auto-Fill (NEWEST!)
+- **Auto-detect Forms**: Automatically finds all forms on the page with their fields
+- **Intelligent Field Detection**: Identifies fields by label, placeholder, name, or aria-label
+- **One-Command Fill**: Fill entire forms with a single menu option
+- **Clipboard Integration**: Use clipboard for each field during form filling
+- **Field Summary**: Shows all fields with labels before filling
+- **Skip Optional Fields**: Press Enter to skip fields you don't want to fill
+- **Works Without Forms**: Even detects individual fields when no `<form>` tag exists
+- **Type Support**: Handles text, email, password, textarea, select dropdowns, and more
+
 ## How to Use the New Features
 
 ### 📋 Clipboard Integration
@@ -85,6 +95,115 @@ The `automation.py` script provides interactive browser control:
 2. Press 'y' to instantly navigate to that page with auto-scan
 3. Press 'n' to start fresh
 4. Your last URL is saved automatically in preferences
+
+## Smart Form Auto-Fill
+
+### 📋 How It Works
+
+The script can automatically detect and fill entire forms on any webpage!
+
+**Option 14: Auto-fill entire form**
+
+#### Step-by-Step Process:
+
+1. **Detection Phase:**
+   ```
+   🔍 Detecting forms on the page...
+   📋 Found 1 form(s):
+     [0] Login Form
+         Fields: 3
+         Action: /login
+   ```
+
+2. **Field Discovery:**
+   ```
+   📝 Form: Login Form
+   ====================================
+   [0] Email (required)
+       Type: email
+   [1] Password (required)
+       Type: password
+   [2] Remember me (optional)
+       Type: checkbox
+   ====================================
+   ```
+
+3. **Interactive Filling:**
+   ```
+   ✏️  Enter values for each field:
+   💡 Clipboard detection is active!
+   
+   [0] Email
+       📋 Use clipboard? ('user@example.com') (y/n/skip): y
+   
+   [1] Password
+       Enter value: ********
+   
+   [2] Remember me
+       Enter value (or Enter to skip): [Enter]
+   ```
+
+4. **Confirmation & Execution:**
+   ```
+   📊 Summary: 2 fields will be filled
+   Proceed with auto-fill? (y/n): y
+   
+   ⌨️  Filling form...
+   [0] Email: typing...
+   [1] Password: typing...
+   
+   ✅ Form auto-fill completed!
+   💡 Review the form before submitting!
+   ```
+
+### What Gets Detected
+
+**Form Fields:**
+- Text inputs (text, email, password, tel, url, number)
+- Textareas (multi-line text)
+- Select dropdowns
+- Checkboxes and radio buttons (coming soon)
+
+**Field Identification:**
+- Associated `<label>` tags
+- `placeholder` attributes
+- `aria-label` attributes
+- `name` and `id` attributes
+
+**Works With:**
+- ✅ Standard HTML forms with `<form>` tags
+- ✅ Modern web apps without form tags (detects individual fields)
+- ✅ Multiple forms on same page (select which one to fill)
+- ✅ Required and optional fields
+
+### Example Use Cases
+
+**Login Form:**
+```
+1. Navigate to login page (auto-scans)
+2. Option 4 → Interact
+3. Option 14 → Auto-fill form
+4. Fill email and password
+5. Done! Use Option 11 to click "Login"
+```
+
+**Registration Form:**
+```
+1. Navigate to signup page
+2. Option 14 → Auto-fill form
+3. Copy each value before prompted
+4. Clipboard automatically detected
+5. All fields filled with human-like typing!
+```
+
+**Contact Form:**
+```
+Multiple fields (name, email, subject, message):
+- Auto-detects all fields
+- Shows field labels clearly
+- Skip optional fields with Enter
+- Fills in one go!
+```
 
 ## Intelligent Automation
 

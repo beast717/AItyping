@@ -132,6 +132,352 @@ def get_element_with_fallback(page, element_list, index, element_type='element')
         
         return (None, str(e))
 
+def detect_forms(page):
+    """
+    Detect all forms on the page and their fields
+    Returns a list of form dictionaries with field information
+    """
+    print("\n🔍 Detecting forms on the page...")
+    
+    try:
+        forms = []
+        form_elements = page.locator('form').all()
+        
+        if not form_elements:
+            # Try to detect form-like structures without <form> tag
+            print("  ℹ️ No <form> tags found, scanning for individual fields...")
+            
+            # Create a pseudo-form with all inputs
+            all_fields = []
+            
+            # Collect all input fields
+            inputs = page.locator('input[type="text"], input[type="email"], input[type="password"], input[type="tel"], input[type="url"], input[type="number"], input:not([type])').all()
+            textareas = page.locator('textarea').all()
+            selects = page.locator('select').all()
+            
+            for inp in inputs:
+                try:
+                    field_info = {
+                        'element': inp,
+                        'type': inp.get_attribute('type') or 'text',
+                        'name': inp.get_attribute('name') or '',
+                        'id': inp.get_attribute('id') or '',
+                        'placeholder': inp.get_attribute('placeholder') or '',
+                        'label': '',
+                        'required': inp.get_attribute('required') is not None
+                    }
+                    
+                    # Try to find associated label
+                    try:
+                        if field_info['id']:
+                            label_elem = page.locator(f'label[for="{field_info["id"]}"]').first
+                            if label_elem.count() > 0:
+                                field_info['label'] = label_elem.inner_text().strip()
+                    except:
+                        pass
+                    
+                    # Try aria-label
+                    if not field_info['label']:
+                        aria_label = inp.get_attribute('aria-label')
+                        if aria_label:
+                            field_info['label'] = aria_label
+                    
+                    all_fields.append(field_info)
+                except:
+                    continue
+            
+            for ta in textareas:
+                try:
+                    field_info = {
+                        'element': ta,
+                        'type': 'textarea',
+                        'name': ta.get_attribute('name') or '',
+                        'id': ta.get_attribute('id') or '',
+                        'placeholder': ta.get_attribute('placeholder') or '',
+                        'label': '',
+                        'required': ta.get_attribute('required') is not None
+                    }
+                    
+                    # Try to find associated label
+                    try:
+                        if field_info['id']:
+                            label_elem = page.locator(f'label[for="{field_info["id"]}"]').first
+                            if label_elem.count() > 0:
+                                field_info['label'] = label_elem.inner_text().strip()
+                    except:
+                        pass
+                    
+                    if not field_info['label']:
+                        aria_label = ta.get_attribute('aria-label')
+                        if aria_label:
+                            field_info['label'] = aria_label
+                    
+                    all_fields.append(field_info)
+                except:
+                    continue
+            
+            for sel in selects:
+                try:
+                    field_info = {
+                        'element': sel,
+                        'type': 'select',
+                        'name': sel.get_attribute('name') or '',
+                        'id': sel.get_attribute('id') or '',
+                        'placeholder': '',
+                        'label': '',
+                        'required': sel.get_attribute('required') is not None
+                    }
+                    
+                    # Try to find associated label
+                    try:
+                        if field_info['id']:
+                            label_elem = page.locator(f'label[for="{field_info["id"]}"]').first
+                            if label_elem.count() > 0:
+                                field_info['label'] = label_elem.inner_text().strip()
+                    except:
+                        pass
+                    
+                    if not field_info['label']:
+                        aria_label = sel.get_attribute('aria-label')
+                        if aria_label:
+                            field_info['label'] = aria_label
+                    
+                    all_fields.append(field_info)
+                except:
+                    continue
+            
+            if all_fields:
+                forms.append({
+                    'index': 0,
+                    'name': 'Page Fields',
+                    'action': '',
+                    'fields': all_fields
+                })
+        else:
+            # Process actual <form> elements
+            for i, form in enumerate(form_elements):
+                try:
+                    form_info = {
+                        'index': i,
+                        'name': form.get_attribute('name') or form.get_attribute('id') or f'Form {i+1}',
+                        'action': form.get_attribute('action') or '',
+                        'fields': []
+                    }
+                    
+                    # Get all input fields in this form
+                    inputs = form.locator('input[type="text"], input[type="email"], input[type="password"], input[type="tel"], input[type="url"], input[type="number"], input:not([type])').all()
+                    textareas = form.locator('textarea').all()
+                    selects = form.locator('select').all()
+                    
+                    # Process each field
+                    for inp in inputs:
+                        try:
+                            field_info = {
+                                'element': inp,
+                                'type': inp.get_attribute('type') or 'text',
+                                'name': inp.get_attribute('name') or '',
+                                'id': inp.get_attribute('id') or '',
+                                'placeholder': inp.get_attribute('placeholder') or '',
+                                'label': '',
+                                'required': inp.get_attribute('required') is not None
+                            }
+                            
+                            # Try to find label
+                            try:
+                                if field_info['id']:
+                                    label_elem = page.locator(f'label[for="{field_info["id"]}"]').first
+                                    if label_elem.count() > 0:
+                                        field_info['label'] = label_elem.inner_text().strip()
+                            except:
+                                pass
+                            
+                            if not field_info['label']:
+                                aria_label = inp.get_attribute('aria-label')
+                                if aria_label:
+                                    field_info['label'] = aria_label
+                            
+                            form_info['fields'].append(field_info)
+                        except:
+                            continue
+                    
+                    for ta in textareas:
+                        try:
+                            field_info = {
+                                'element': ta,
+                                'type': 'textarea',
+                                'name': ta.get_attribute('name') or '',
+                                'id': ta.get_attribute('id') or '',
+                                'placeholder': ta.get_attribute('placeholder') or '',
+                                'label': '',
+                                'required': ta.get_attribute('required') is not None
+                            }
+                            
+                            try:
+                                if field_info['id']:
+                                    label_elem = page.locator(f'label[for="{field_info["id"]}"]').first
+                                    if label_elem.count() > 0:
+                                        field_info['label'] = label_elem.inner_text().strip()
+                            except:
+                                pass
+                            
+                            if not field_info['label']:
+                                aria_label = ta.get_attribute('aria-label')
+                                if aria_label:
+                                    field_info['label'] = aria_label
+                            
+                            form_info['fields'].append(field_info)
+                        except:
+                            continue
+                    
+                    for sel in selects:
+                        try:
+                            field_info = {
+                                'element': sel,
+                                'type': 'select',
+                                'name': sel.get_attribute('name') or '',
+                                'id': sel.get_attribute('id') or '',
+                                'placeholder': '',
+                                'label': '',
+                                'required': sel.get_attribute('required') is not None
+                            }
+                            
+                            try:
+                                if field_info['id']:
+                                    label_elem = page.locator(f'label[for="{field_info["id"]}"]').first
+                                    if label_elem.count() > 0:
+                                        field_info['label'] = label_elem.inner_text().strip()
+                            except:
+                                pass
+                            
+                            if not field_info['label']:
+                                aria_label = sel.get_attribute('aria-label')
+                                if aria_label:
+                                    field_info['label'] = aria_label
+                            
+                            form_info['fields'].append(field_info)
+                        except:
+                            continue
+                    
+                    if form_info['fields']:
+                        forms.append(form_info)
+                except:
+                    continue
+        
+        return forms
+    except Exception as e:
+        print(f"  ✗ Error detecting forms: {e}")
+        return []
+
+def auto_fill_form(page):
+    """
+    Auto-detect and fill forms on the page
+    """
+    forms = detect_forms(page)
+    
+    if not forms:
+        print("\n⚠ No forms detected on this page!")
+        print("💡 Try using the regular interaction options (1-13) instead.")
+        return
+    
+    print(f"\n📋 Found {len(forms)} form(s):")
+    for form in forms:
+        print(f"\n  [{form['index']}] {form['name']}")
+        print(f"      Fields: {len(form['fields'])}")
+        if form['action']:
+            print(f"      Action: {form['action']}")
+    
+    # Select form
+    if len(forms) == 1:
+        selected_form = forms[0]
+        print(f"\n✓ Auto-selected: {selected_form['name']}")
+    else:
+        form_choice = input(f"\nSelect form [0-{len(forms)-1}] (or 'c' to cancel): ").strip()
+        if form_choice.lower() == 'c':
+            print("Cancelled.")
+            return
+        try:
+            selected_form = forms[int(form_choice)]
+        except:
+            print("✗ Invalid selection")
+            return
+    
+    # Display fields
+    print(f"\n📝 Form: {selected_form['name']}")
+    print("=" * 60)
+    
+    for i, field in enumerate(selected_form['fields']):
+        label = field['label'] or field['placeholder'] or field['name'] or field['id'] or 'Unnamed field'
+        required = '(required)' if field['required'] else '(optional)'
+        print(f"  [{i}] {label} {required}")
+        print(f"      Type: {field['type']}")
+    
+    print("=" * 60)
+    
+    # Collect values for all fields
+    field_values = {}
+    
+    print("\n✏️  Enter values for each field (press Enter to skip):")
+    print("💡 Clipboard detection is active - copy text before each field!\n")
+    
+    for i, field in enumerate(selected_form['fields']):
+        label = field['label'] or field['placeholder'] or field['name'] or field['id'] or f'Field {i}'
+        
+        # Check clipboard
+        clipboard_text = get_clipboard_text()
+        
+        if field['type'] == 'select':
+            print(f"\n[{i}] {label} (dropdown)")
+            value = input(f"    Enter option value: ").strip()
+        else:
+            if clipboard_text:
+                use_clipboard = input(f"\n[{i}] {label}\n    📋 Use clipboard? ('{clipboard_text[:40]}...') (y/n/skip): ").strip().lower()
+                if use_clipboard == 'y':
+                    value = clipboard_text
+                elif use_clipboard == 'skip':
+                    continue
+                else:
+                    value = input(f"    Enter value: ").strip()
+            else:
+                value = input(f"\n[{i}] {label}\n    Enter value (or Enter to skip): ").strip()
+        
+        if value:
+            field_values[i] = value
+    
+    # Confirm before filling
+    print(f"\n📊 Summary: {len(field_values)} fields will be filled")
+    confirm = input("Proceed with auto-fill? (y/n): ").strip().lower()
+    
+    if confirm != 'y':
+        print("Cancelled.")
+        return
+    
+    # Fill the form
+    print("\n⌨️  Filling form...")
+    base_delay = user_preferences['typing_speed']
+    
+    for i, value in field_values.items():
+        field = selected_form['fields'][i]
+        label = field['label'] or field['placeholder'] or field['name'] or f'Field {i}'
+        
+        try:
+            if field['type'] == 'select':
+                print(f"  [{i}] {label}: selecting '{value}'...")
+                field['element'].select_option(value)
+            elif field['type'] == 'textarea':
+                print(f"  [{i}] {label}: typing...")
+                safe_type(field['element'], value, base_delay, f"Fill {label}")
+            else:
+                print(f"  [{i}] {label}: typing...")
+                safe_type(field['element'], value, base_delay, f"Fill {label}")
+            
+            time.sleep(0.3)  # Small delay between fields
+        except Exception as e:
+            print(f"  ⚠ Error filling {label}: {e}")
+            continue
+    
+    print("\n✅ Form auto-fill completed!")
+    print("💡 Review the form before submitting!")
+
 def get_edge_profile_path():
     """Get the default Edge profile path for the current user"""
     user_profile = os.environ.get('USERPROFILE')
@@ -362,7 +708,8 @@ def interact_with_element(page):
     print("11. 🔍 Click element by text (e.g., 'Submit')")
     print("12. 🔍 Type in input by label/placeholder")
     print("13. 🔍 Find by CSS selector or XPath")
-    print("14. Back to main menu")
+    print("14. 📋 Auto-fill entire form")
+    print("15. Back to main menu")
     
     choice = input("\nChoose action: ").strip()
     
@@ -1154,6 +1501,13 @@ def interact_with_element(page):
             print(handle_common_errors(e, f"selector '{selector}'"))
     
     elif choice == '14':
+        # Auto-fill entire form
+        try:
+            auto_fill_form(page)
+        except Exception as e:
+            print(handle_common_errors(e, "form auto-fill"))
+    
+    elif choice == '15':
         # Back to main menu
         return
 
