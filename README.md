@@ -55,6 +55,14 @@ The `automation.py` script provides interactive browser control:
 - **🔖 Session Resume**: Remembers your last visited URL and offers to resume where you left off
 - **⚡ Quick Start**: Jump right back into your work without manual scanning
 
+### 🔍 Selector Alternatives (NEW!)
+- **Find by Text**: Click buttons or links by their visible text (e.g., "Submit", "Login", "Next")
+- **Find by Label**: Type in inputs by their label or placeholder text (e.g., "Email", "Password")
+- **CSS Selectors**: Use powerful CSS selectors for precise element targeting
+- **XPath Support**: Advanced XPath queries for complex element finding
+- **Smart Fallback**: Helpful error messages if elements can't be found
+- **No Index Needed**: Find elements without memorizing numerical indices
+
 ## How to Use the New Features
 
 ### 📋 Clipboard Integration
@@ -77,6 +85,115 @@ The `automation.py` script provides interactive browser control:
 2. Press 'y' to instantly navigate to that page with auto-scan
 3. Press 'n' to start fresh
 4. Your last URL is saved automatically in preferences
+
+## Intelligent Automation
+
+### 🔍 Selector Alternatives - Easy Element Finding
+
+Instead of using numerical indices, you can now find elements in multiple intuitive ways:
+
+#### Option 11: Click Element by Text
+```
+Example: Click the "Submit" button
+- Enter text: Submit
+- Element type: button (or 'any' to search all elements)
+- Works with partial matches and case-insensitive
+```
+
+**Use cases:**
+- Click "Login", "Sign Up", "Next", "Previous" buttons
+- Click "Learn More", "Read More" links
+- No need to remember which index number
+
+#### Option 12: Type in Input by Label/Placeholder
+```
+Example: Fill the email field
+- Enter label: Email
+- The script finds the input with label or placeholder "Email"
+- Supports clipboard paste
+```
+
+**Use cases:**
+- Fill "Username", "Email", "Password" fields by name
+- Find "Search" box without scanning
+- Works with form labels and placeholders
+
+#### Option 13: Find by CSS Selector or XPath
+```
+CSS Examples:
+- #submit-btn (element with id="submit-btn")
+- .login-form input (input inside class="login-form")
+- button[type="submit"] (submit buttons)
+
+XPath Examples:
+- //button[@id="submit"]
+- //input[@placeholder="Email"]
+- //a[contains(text(), "Click here")]
+```
+
+**Use cases:**
+- Precise targeting when multiple similar elements exist
+- Dynamic pages where indices change
+- Complex element hierarchies
+
+#### Why Use Selectors Instead of Indices?
+
+**Before (Index-based):**
+```
+1. Scan page
+2. Remember button [5] is the Submit button
+3. If page changes, index might be different
+4. Need to re-scan and find the new index
+```
+
+**After (Text/Selector-based):**
+```
+1. Just click element with text "Submit"
+2. Works every time, even if page changes
+3. More readable and maintainable
+4. No scanning required
+```
+
+### Real-World Examples
+
+#### Example 1: Login to a Website
+```
+Old way (by index):
+1. Scan page
+2. Fill input [0] with "user@example.com"
+3. Fill input [1] with "password123"
+4. Click button [2]
+
+New way (by selector):
+1. Type in "Email" → user@example.com
+2. Type in "Password" → password123
+3. Click "Login"
+```
+
+#### Example 2: Submit a Form
+```
+Without selectors:
+1. Navigate to form
+2. Scan (remember indices)
+3. Fill input [0], [1], [2]...
+4. Click button [5]
+
+With selectors:
+1. Navigate to form (auto-scans)
+2. Type in "Name" → John Doe
+3. Type in "Email" → john@example.com
+4. Click "Submit"
+```
+
+#### Example 3: Dynamic Content
+```
+Problem: A page adds/removes elements, changing indices
+
+Solution with CSS:
+- Use selector: button.submit-btn
+- Or find by text: "Submit Form"
+- Always works, regardless of index changes
+```
 
 ## Intelligent Automation Features
 

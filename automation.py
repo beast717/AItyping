@@ -45,6 +45,93 @@ def get_clipboard_text():
             return None
     return None
 
+def find_element_by_text(page, element_type, text, exact_match=False):
+    """
+    Find an element by its visible text
+    Returns the element or None if not found
+    """
+    try:
+        if exact_match:
+            # Exact text match
+            if element_type == 'button':
+                selector = f"button:has-text('{text}'), input[type='button']:has-text('{text}'), input[type='submit']:has-text('{text}')"
+            elif element_type == 'link':
+                selector = f"a:has-text('{text}')"
+            else:
+                selector = f"{element_type}:has-text('{text}')"
+        else:
+            # Partial text match (case-insensitive)
+            if element_type == 'button':
+                selector = f"button:text-is('{text}'), input[type='button'][value*='{text}' i], input[type='submit'][value*='{text}' i]"
+            elif element_type == 'link':
+                selector = f"a:text-is('{text}')"
+            else:
+                selector = f"{element_type}:text-is('{text}')"
+        
+        # Try exact match first
+        element = page.locator(f"text='{text}'").first
+        if element.count() > 0:
+            return element
+        
+        # Try partial match
+        element = page.locator(f"text=/{text}/i").first
+        if element.count() > 0:
+            return element
+            
+        return None
+    except Exception as e:
+        print(f"  ⚠ Error finding element by text: {e}")
+        return None
+
+def find_element_by_selector(page, selector, selector_type='css'):
+    """
+    Find an element by CSS selector or XPath
+    Returns the element or None if not found
+    """
+    try:
+        if selector_type == 'xpath':
+            element = page.locator(f"xpath={selector}").first
+        else:  # css
+            element = page.locator(selector).first
+        
+        if element.count() > 0:
+            return element
+        return None
+    except Exception as e:
+        print(f"  ⚠ Error finding element by selector: {e}")
+        return None
+
+def get_element_with_fallback(page, element_list, index, element_type='element'):
+    """
+    Try to get element by index, with smart fallback if it fails
+    Returns (element, error_message) tuple
+    """
+    try:
+        # Try direct index access
+        if 0 <= index < len(element_list):
+            elem = element_list[index]
+            # Verify element is still valid
+            elem.count()  # This will throw if element is stale
+            return (elem, None)
+        else:
+            return (None, f"Index {index} out of range (0-{len(element_list)-1})")
+    except Exception as e:
+        # Element is stale or invalid - try to recover
+        error_msg = str(e).lower()
+        
+        if 'stale' in error_msg or 'detached' in error_msg:
+            print(f"  ⚠ Element [{index}] is stale. Attempting to recover...")
+            
+            # Try to get element attributes before it became stale
+            try:
+                # Re-scan the same element type
+                print(f"  🔄 Re-scanning {element_type}s...")
+                return (None, f"Element became stale. Please try option 3 to re-scan, or use 'Find by text' (option 11)")
+            except:
+                pass
+        
+        return (None, str(e))
+
 def get_edge_profile_path():
     """Get the default Edge profile path for the current user"""
     user_profile = os.environ.get('USERPROFILE')
@@ -104,11 +191,15 @@ def retry_with_backoff(func, max_retries=None, initial_delay=None, description="
 def safe_click(element, description="Click"):
     """
     Safely click an element with retry and error recovery
+    Works with both Locator and ElementHandle objects
     """
     def click_action():
-        # Ensure element is visible and clickable
-        element.wait_for_element_state('visible', timeout=5000)
-        element.scroll_into_view_if_needed()
+        # Locator objects don't have wait_for_element_state
+        # They wait automatically when performing actions
+        try:
+            element.scroll_into_view_if_needed()
+        except:
+            pass  # Locator objects handle this automatically
         time.sleep(0.1)
         element.click()
         return True
@@ -118,11 +209,20 @@ def safe_click(element, description="Click"):
 def safe_fill(element, value, description="Fill"):
     """
     Safely fill an element with retry and error recovery
+    Works with both Locator and ElementHandle objects
     """
     def fill_action():
-        element.wait_for_element_state('visible', timeout=5000)
-        element.scroll_into_view_if_needed()
-        element.clear()
+        try:
+            element.scroll_into_view_if_needed()
+        except:
+            pass  # Locator objects handle this automatically
+        
+        # Clear and fill
+        try:
+            element.clear()
+        except:
+            element.fill('')  # Alternative clear method
+        
         element.fill(value)
         
         # Verify the value was set
@@ -138,11 +238,19 @@ def safe_fill(element, value, description="Fill"):
 def safe_type(element, value, delay=100, description="Type"):
     """
     Safely type into an element with retry and error recovery
+    Works with both Locator and ElementHandle objects
     """
     def type_action():
-        element.wait_for_element_state('visible', timeout=5000)
-        element.scroll_into_view_if_needed()
-        element.clear()
+        try:
+            element.scroll_into_view_if_needed()
+        except:
+            pass  # Locator objects handle this automatically
+        
+        # Clear field
+        try:
+            element.clear()
+        except:
+            element.fill('')  # Alternative clear method
         
         # Type with human-like behavior
         for char in value:
@@ -251,7 +359,10 @@ def interact_with_element(page):
     print("8. Check/uncheck checkbox")
     print("9. 🔄 Batch fill multiple inputs")
     print("10. 🔄 Batch type in multiple textareas")
-    print("11. Back to main menu")
+    print("11. 🔍 Click element by text (e.g., 'Submit')")
+    print("12. 🔍 Type in input by label/placeholder")
+    print("13. 🔍 Find by CSS selector or XPath")
+    print("14. Back to main menu")
     
     choice = input("\nChoose action: ").strip()
     
@@ -604,8 +715,10 @@ def interact_with_element(page):
             idx = int(index)
             
             def select_action():
-                page_elements['selects'][idx].wait_for_element_state('visible', timeout=5000)
-                page_elements['selects'][idx].scroll_into_view_if_needed()
+                try:
+                    page_elements['selects'][idx].scroll_into_view_if_needed()
+                except:
+                    pass  # Locator objects handle this automatically
                 page_elements['selects'][idx].select_option(value)
                 return True
             
@@ -638,8 +751,10 @@ def interact_with_element(page):
             idx = int(index)
             
             def check_action():
-                page_elements['checkboxes'][idx].wait_for_element_state('visible', timeout=5000)
-                page_elements['checkboxes'][idx].scroll_into_view_if_needed()
+                try:
+                    page_elements['checkboxes'][idx].scroll_into_view_if_needed()
+                except:
+                    pass  # Locator objects handle this automatically
                 page_elements['checkboxes'][idx].check()
                 return True
             
@@ -816,6 +931,229 @@ def interact_with_element(page):
             print(f"✗ Error: {e}")
     
     elif choice == '11':
+        # Click element by text
+        text = input("\n🔍 Enter text to find (e.g., 'Submit', 'Login', 'Next'): ").strip()
+        if not text:
+            print("Cancelled.")
+            return
+        
+        element_type = input("Element type? (button/link/any) [default: any]: ").strip().lower() or 'any'
+        
+        try:
+            print(f"Searching for element with text '{text}'...")
+            
+            # Try finding by text
+            if element_type == 'any':
+                # Try multiple strategies
+                element = page.get_by_text(text, exact=False).first
+                if element.count() == 0:
+                    element = page.get_by_role("button", name=text).first
+                if element.count() == 0:
+                    element = page.get_by_role("link", name=text).first
+            else:
+                if element_type == 'button':
+                    element = page.get_by_role("button", name=text).first
+                elif element_type == 'link':
+                    element = page.get_by_role("link", name=text).first
+                else:
+                    element = page.get_by_text(text, exact=False).first
+            
+            if element.count() > 0:
+                success, _, error = safe_click(element, f"Click element '{text}'")
+                if success and is_recording:
+                    recorded_actions.append({
+                        'type': 'click_by_text',
+                        'text': text,
+                        'element_type': element_type,
+                        'description': f"Click '{text}'"
+                    })
+            else:
+                print(f"✗ Could not find element with text '{text}'")
+                print("💡 Tip: Try being more specific or use CSS selector (option 13)")
+        except Exception as e:
+            print(handle_common_errors(e, f"element with text '{text}'"))
+    
+    elif choice == '12':
+        # Type in input by label/placeholder
+        label = input("\n🔍 Enter label or placeholder text (e.g., 'Email', 'Search'): ").strip()
+        if not label:
+            print("Cancelled.")
+            return
+        
+        # Check clipboard
+        clipboard_text = get_clipboard_text()
+        if clipboard_text:
+            use_clipboard = input(f"📋 Clipboard contains: '{clipboard_text[:50]}...' Use it? (y/n): ").strip().lower()
+            if use_clipboard == 'y':
+                value = clipboard_text
+            else:
+                value = input("Enter text to type: ").strip()
+        else:
+            value = input("Enter text to type: ").strip()
+        
+        if not value:
+            print("Cancelled.")
+            return
+        
+        try:
+            print(f"Searching for input with label/placeholder '{label}'...")
+            
+            # Try multiple strategies, prioritizing actual input fields
+            element = None
+            
+            # Strategy 1: Try placeholder first (most reliable for input fields)
+            try:
+                element = page.get_by_placeholder(label, exact=False).first
+                if element.count() > 0:
+                    # Verify it's an input/textarea
+                    tag = element.evaluate("el => el.tagName.toLowerCase()")
+                    if tag in ['input', 'textarea']:
+                        print(f"  ✓ Found by placeholder")
+                    else:
+                        element = None
+            except:
+                pass
+            
+            # Strategy 2: Try finding input/textarea with label attribute
+            if not element or element.count() == 0:
+                try:
+                    # Get inputs/textareas with matching aria-label
+                    element = page.locator(f"input[aria-label*='{label}' i], textarea[aria-label*='{label}' i]").first
+                    if element.count() > 0:
+                        print(f"  ✓ Found by aria-label")
+                except:
+                    pass
+            
+            # Strategy 3: Try get_by_label but filter for inputs only
+            if not element or element.count() == 0:
+                try:
+                    all_matches = page.get_by_label(label, exact=False).all()
+                    for match in all_matches:
+                        tag = match.evaluate("el => el.tagName.toLowerCase()")
+                        if tag in ['input', 'textarea']:
+                            element = match
+                            print(f"  ✓ Found by label")
+                            break
+                except:
+                    pass
+            
+            # Strategy 4: Try name attribute
+            if not element or element.count() == 0:
+                try:
+                    element = page.locator(f"input[name*='{label}' i], textarea[name*='{label}' i]").first
+                    if element.count() > 0:
+                        print(f"  ✓ Found by name attribute")
+                except:
+                    pass
+            
+            # Strategy 5: Try title attribute
+            if not element or element.count() == 0:
+                try:
+                    element = page.locator(f"input[title*='{label}' i], textarea[title*='{label}' i]").first
+                    if element.count() > 0:
+                        print(f"  ✓ Found by title attribute")
+                except:
+                    pass
+            
+            if element and element.count() > 0:
+                # Ask for typing preferences
+                use_prefs = input(f"Use saved preferences? (y/n, current speed: {user_preferences['typing_speed']}ms): ").strip().lower()
+                
+                if use_prefs == 'y':
+                    base_delay = user_preferences['typing_speed']
+                    enable_typos = user_preferences['enable_typos']
+                    print(f"✓ Using preferences: {base_delay}ms, typos: {'on' if enable_typos else 'off'}")
+                else:
+                    speed = input("Enter base typing speed in ms (50-200, default 100): ").strip()
+                    typo_choice = input("Enable typos? (y/n, default y): ").strip().lower()
+                    base_delay = int(speed) if speed else 100
+                    enable_typos = typo_choice != 'n'
+                
+                success, _, error = safe_type(element, value, base_delay, f"Type in '{label}'")
+                
+                if success and is_recording:
+                    recorded_actions.append({
+                        'type': 'type_by_label',
+                        'label': label,
+                        'value': value,
+                        'base_delay': base_delay,
+                        'description': f"Type in '{label}'"
+                    })
+            else:
+                print(f"✗ Could not find input with label/placeholder '{label}'")
+                print("💡 Tip: Try the exact label text or use CSS selector (option 13)")
+        except Exception as e:
+            print(handle_common_errors(e, f"input '{label}'"))
+    
+    elif choice == '13':
+        # Find by CSS selector or XPath
+        print("\n🔍 Advanced Selector")
+        print("1. CSS Selector (e.g., '#submit-btn', '.login-form input')")
+        print("2. XPath (e.g., '//button[@id=\"submit\"]')")
+        
+        selector_choice = input("Choose selector type (1/2): ").strip()
+        
+        if selector_choice not in ['1', '2']:
+            print("Invalid choice.")
+            return
+        
+        selector = input("Enter selector: ").strip()
+        if not selector:
+            print("Cancelled.")
+            return
+        
+        action = input("Action? (click/fill/type) [default: click]: ").strip().lower() or 'click'
+        
+        try:
+            selector_type = 'css' if selector_choice == '1' else 'xpath'
+            print(f"Searching for element with {selector_type} selector...")
+            
+            element = find_element_by_selector(page, selector, selector_type)
+            
+            if element and element.count() > 0:
+                if action == 'click':
+                    success, _, error = safe_click(element, f"Click element")
+                    if success and is_recording:
+                        recorded_actions.append({
+                            'type': 'click_by_selector',
+                            'selector': selector,
+                            'selector_type': selector_type,
+                            'description': f"Click by {selector_type}"
+                        })
+                
+                elif action in ['fill', 'type']:
+                    # Check clipboard
+                    clipboard_text = get_clipboard_text()
+                    if clipboard_text:
+                        use_clipboard = input(f"📋 Clipboard contains: '{clipboard_text[:50]}...' Use it? (y/n): ").strip().lower()
+                        if use_clipboard == 'y':
+                            value = clipboard_text
+                        else:
+                            value = input("Enter text: ").strip()
+                    else:
+                        value = input("Enter text: ").strip()
+                    
+                    if action == 'fill':
+                        success, _, error = safe_fill(element, value, f"Fill element")
+                    else:  # type
+                        base_delay = user_preferences['typing_speed']
+                        success, _, error = safe_type(element, value, base_delay, f"Type in element")
+                    
+                    if success and is_recording:
+                        recorded_actions.append({
+                            'type': f'{action}_by_selector',
+                            'selector': selector,
+                            'selector_type': selector_type,
+                            'value': value,
+                            'description': f"{action.capitalize()} by {selector_type}"
+                        })
+            else:
+                print(f"✗ Could not find element with selector '{selector}'")
+                print("💡 Tip: Check your selector syntax or inspect the page elements")
+        except Exception as e:
+            print(handle_common_errors(e, f"selector '{selector}'"))
+    
+    elif choice == '14':
         # Back to main menu
         return
 
