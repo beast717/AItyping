@@ -416,29 +416,35 @@ def auto_fill_form(page):
     # Collect values for all fields
     field_values = {}
     
-    print("\n✏️  Enter values for each field (press Enter to skip):")
-    print("💡 Clipboard detection is active - copy text before each field!\n")
+    print("\n✏️  Enter values for each field:")
+    print("💡 Type 'p' to paste from clipboard, or Enter to skip\n")
     
     for i, field in enumerate(selected_form['fields']):
         label = field['label'] or field['placeholder'] or field['name'] or field['id'] or f'Field {i}'
-        
-        # Check clipboard
-        clipboard_text = get_clipboard_text()
         
         if field['type'] == 'select':
             print(f"\n[{i}] {label} (dropdown)")
             value = input(f"    Enter option value: ").strip()
         else:
-            if clipboard_text:
-                use_clipboard = input(f"\n[{i}] {label}\n    📋 Use clipboard? ('{clipboard_text[:40]}...') (y/n/skip): ").strip().lower()
-                if use_clipboard == 'y':
+            # Show field label
+            print(f"\n[{i}] {label}")
+            user_input = input(f"    Value (p=paste, Enter=skip): ").strip()
+            
+            if user_input.lower() == 'p':
+                # Paste from clipboard instantly
+                clipboard_text = get_clipboard_text()
+                if clipboard_text:
                     value = clipboard_text
-                elif use_clipboard == 'skip':
-                    continue
+                    print(f"    ✓ Pasted: '{clipboard_text[:60]}...'")
                 else:
+                    print("    ⚠ Clipboard is empty")
                     value = input(f"    Enter value: ").strip()
+            elif user_input == '':
+                # Skip this field
+                continue
             else:
-                value = input(f"\n[{i}] {label}\n    Enter value (or Enter to skip): ").strip()
+                # Use the typed value
+                value = user_input
         
         if value:
             field_values[i] = value
@@ -585,6 +591,7 @@ def safe_type(element, value, delay=100, description="Type"):
     """
     Safely type into an element with retry and error recovery
     Works with both Locator and ElementHandle objects
+    Includes human-like typing with typos, variations, and pauses
     """
     def type_action():
         try:
@@ -598,9 +605,63 @@ def safe_type(element, value, delay=100, description="Type"):
         except:
             element.fill('')  # Alternative clear method
         
+        # Get user preferences
+        enable_typos = user_preferences.get('enable_typos', True)
+        typo_chance = user_preferences.get('typo_chance', 0.05)
+        pause_after_punctuation = user_preferences.get('pause_after_punctuation', True)
+        thinking_pauses = user_preferences.get('thinking_pauses', True)
+        
+        # Keyboard nearby keys for typos
+        keyboard_nearby = {
+            'a': 'sqwz', 'b': 'vghn', 'c': 'xdfv', 'd': 'serfcx', 'e': 'wrsd',
+            'f': 'drtgvc', 'g': 'ftyhbv', 'h': 'gyujnb', 'i': 'uojk', 'j': 'huikm',
+            'k': 'jiolm', 'l': 'kop', 'm': 'njk', 'n': 'bhjm', 'o': 'iplk',
+            'p': 'ol', 'q': 'wa', 'r': 'etdf', 's': 'awedxz', 't': 'ryfg',
+            'u': 'yihj', 'v': 'cfgb', 'w': 'qeas', 'x': 'zsdc', 'y': 'tugh',
+            'z': 'asx'
+        }
+        
         # Type with human-like behavior
-        for char in value:
-            element.type(char, delay=delay)
+        for i, char in enumerate(value):
+            # Random typo chance (skip spaces, newlines, and first char)
+            if enable_typos and i > 0 and char not in [' ', '\n', '\r', '\t'] and random.random() < typo_chance:
+                # Make a typo - type a random nearby key
+                typo_char = char
+                if char.lower() in keyboard_nearby:
+                    nearby_keys = keyboard_nearby[char.lower()]
+                    typo_char = random.choice(nearby_keys)
+                    if char.isupper():
+                        typo_char = typo_char.upper()
+                
+                # Type the typo
+                typo_delay = int(delay * random.uniform(0.8, 1.2))
+                element.type(typo_char, delay=typo_delay)
+                
+                # Pause (noticing the mistake)
+                time.sleep(delay * random.uniform(0.3, 0.6) / 1000)
+                
+                # Delete the typo
+                element.press('Backspace')
+                time.sleep(delay * 0.5 / 1000)
+            
+            # Add random variation: ±40% of base speed
+            variation = random.uniform(-0.4, 0.4)
+            char_delay = int(delay * (1 + variation))
+            
+            # Longer pauses after punctuation and spaces (more human)
+            if pause_after_punctuation:
+                if char in '.,!?;:':
+                    char_delay = int(char_delay * random.uniform(1.5, 2.5))
+                elif char == ' ':
+                    char_delay = int(char_delay * random.uniform(1.2, 1.8))
+                elif char in ['\n', '\r']:
+                    char_delay = int(char_delay * random.uniform(2.0, 3.0))
+            
+            # Occasional longer "thinking" pauses (2% chance)
+            if thinking_pauses and random.random() < 0.02:
+                char_delay = int(char_delay * random.uniform(3, 5))
+            
+            element.type(char, delay=char_delay)
         
         # Verify the value was set
         if user_preferences.get('verify_actions', True):
