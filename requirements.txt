@@ -5,3 +5,7 @@ pyperclip>=1.8.2
 # Alternative: if you still have issues, you can try these instead:
 # playwright==1.39.0
 # playwright==1.38.0
+# Global hotkeys for automation control
+pynput>=1.7.6
+# Gemini API for intelligent auto-rating
+google-generativeai>=0.3.0

@@ -16,11 +16,37 @@ except ImportError:
     CLIPBOARD_AVAILABLE = False
     print("⚠ pyperclip not installed. Clipboard features disabled. Install with: pip install pyperclip")
 
+try:
+    from pynput import keyboard
+    HOTKEYS_AVAILABLE = True
+except ImportError:
+    HOTKEYS_AVAILABLE = False
+    print("⚠ pynput not installed. Global hotkeys disabled. Install with: pip install pynput")
+
+try:
+    import google.generativeai as genai
+    GEMINI_AVAILABLE = True
+except ImportError:
+    GEMINI_AVAILABLE = False
+    print("⚠ google-generativeai not installed. Gemini features disabled. Install with: pip install google-generativeai")
+
+
 # Global variable to store scanned elements
 page_elements = {}
 # Global variable to store recorded actions
 recorded_actions = []
 is_recording = False
+
+# Hotkey state
+hotkey_listener = None
+hotkey_action_queue = []
+
+# Watch & Learn state
+action_history = []  # Stores recent actions for pattern detection
+detected_patterns = []  # Stores detected repetitive patterns
+watch_and_learn_enabled = True  # Enable by default
+pattern_threshold = 2  # Number of repetitions needed to detect pattern
+
 # Global variable to store user preferences
 user_preferences = {
     'typing_speed': 100,
@@ -33,7 +59,15 @@ user_preferences = {
     'auto_wait_timeout': 30000,
     'verify_actions': True,
     'auto_scan': True,
-    'last_url': ''
+    'last_url': '',
+    'last_scroll_position': 0,
+    'form_field_cache': {},
+    'enable_hotkeys': False,
+    'hotkey_record': 'ctrl+shift+r',
+    'hotkey_replay': 'ctrl+shift+p',
+    'clipboard_auto_suggest': True,
+    'gemini_api_key': '',  # Set via preferences
+    'gemini_model': 'gemini-2.0-flash-exp'  # Free and fast model
 }
 
 def get_clipboard_text():
@@ -44,6 +78,1373 @@ def get_clipboard_text():
         except Exception:
             return None
     return None
+
+def save_page_context(page):
+    """Save current page context for resuming later"""
+    try:
+        context = {
+            'url': page.url,
+            'scroll_position': page.evaluate('window.pageYOffset'),
+            'form_fields': {},
+            'timestamp': datetime.now().isoformat()
+        }
+        
+        # Save all input values
+        inputs = page.locator('input[type="text"], input[type="email"], input[type="password"], input[type="tel"], input[type="url"], input[type="number"]').all()
+        for i, inp in enumerate(inputs):
+            try:
+                value = inp.input_value()
+                if value:
+                    selector = f"input:nth-of-type({i+1})"
+                    context['form_fields'][selector] = value
+            except:
+                continue
+        
+        # Save textarea values
+        textareas = page.locator('textarea').all()
+        for i, ta in enumerate(textareas):
+            try:
+                value = ta.input_value()
+                if value:
+                    selector = f"textarea:nth-of-type({i+1})"
+                    context['form_fields'][selector] = value
+            except:
+                continue
+        
+        user_preferences['last_scroll_position'] = context['scroll_position']
+        user_preferences['form_field_cache'] = context['form_fields']
+        
+        return context
+    except Exception as e:
+        print(f"⚠ Could not save page context: {e}")
+        return None
+
+def restore_page_context(page, context=None):
+    """Restore saved page context"""
+    try:
+        if context is None:
+            # Use saved preferences
+            scroll_pos = user_preferences.get('last_scroll_position', 0)
+            form_fields = user_preferences.get('form_field_cache', {})
+        else:
+            scroll_pos = context.get('scroll_position', 0)
+            form_fields = context.get('form_fields', {})
+        
+        # Restore scroll position
+        if scroll_pos > 0:
+            page.evaluate(f'window.scrollTo(0, {scroll_pos})')
+            print(f"✓ Restored scroll position: {scroll_pos}px")
+        
+        # Restore form field values
+        restored_count = 0
+        for selector, value in form_fields.items():
+            try:
+                element = page.locator(selector).first
+                if element.count() > 0:
+                    element.fill(value)
+                    restored_count += 1
+            except:
+                continue
+        
+        if restored_count > 0:
+            print(f"✓ Restored {restored_count} form field(s)")
+        
+        return True
+    except Exception as e:
+        print(f"⚠ Could not restore page context: {e}")
+        return False
+
+def setup_hotkeys():
+    """Setup global hotkeys for automation control"""
+    global hotkey_listener, hotkey_action_queue
+    
+    if not HOTKEYS_AVAILABLE:
+        return None
+    
+    def on_activate_record():
+        """Hotkey callback for recording toggle"""
+        hotkey_action_queue.append('toggle_record')
+        print("\n🔥 Hotkey: Toggle Recording")
+    
+    def on_activate_replay():
+        """Hotkey callback for replay last session"""
+        hotkey_action_queue.append('replay_last')
+        print("\n🔥 Hotkey: Replay Last Session")
+    
+    # Parse hotkey strings
+    try:
+        from pynput.keyboard import HotKey, Key, KeyCode
+        
+        # Create hotkey combinations
+        record_keys = {Key.ctrl, Key.shift, KeyCode.from_char('r')}
+        replay_keys = {Key.ctrl, Key.shift, KeyCode.from_char('p')}
+        
+        record_hotkey = HotKey(record_keys, on_activate_record)
+        replay_hotkey = HotKey(replay_keys, on_activate_replay)
+        
+        def for_canonical(f):
+            return lambda k: f(listener.canonical(k))
+        
+        # Start listener
+        listener = keyboard.Listener(
+            on_press=for_canonical(lambda key: (
+                record_hotkey.press(key),
+                replay_hotkey.press(key)
+            )),
+            on_release=for_canonical(lambda key: (
+                record_hotkey.release(key),
+                replay_hotkey.release(key)
+            ))
+        )
+        
+        listener.start()
+        hotkey_listener = listener
+        
+        print("✓ Global hotkeys enabled:")
+        print("  • Ctrl+Shift+R - Toggle Recording")
+        print("  • Ctrl+Shift+P - Replay Last Session")
+        
+        return listener
+    except Exception as e:
+        print(f"⚠ Could not setup hotkeys: {e}")
+        return None
+
+def stop_hotkeys():
+    """Stop global hotkey listener"""
+    global hotkey_listener
+    if hotkey_listener:
+        try:
+            hotkey_listener.stop()
+            hotkey_listener = None
+            print("✓ Hotkeys disabled")
+        except:
+            pass
+
+def process_hotkey_actions():
+    """Process queued hotkey actions"""
+    global hotkey_action_queue
+    
+    actions = hotkey_action_queue.copy()
+    hotkey_action_queue.clear()
+    
+    return actions
+
+def track_action(action_type, details):
+    """
+    Track user actions for pattern detection (Watch & Learn)
+    """
+    global action_history
+    
+    if not watch_and_learn_enabled:
+        return
+    
+    # Create action record
+    action_record = {
+        'type': action_type,
+        'details': details,
+        'timestamp': datetime.now().isoformat(),
+        'sequence_id': len(action_history)
+    }
+    
+    action_history.append(action_record)
+    
+    # Keep only last 50 actions to avoid memory issues
+    if len(action_history) > 50:
+        action_history = action_history[-50:]
+    
+    # Check for patterns after each action
+    detect_patterns()
+
+def detect_patterns():
+    """
+    Detect repetitive patterns in action history
+    """
+    global action_history, detected_patterns, pattern_threshold
+    
+    if len(action_history) < 4:  # Need at least 4 actions to detect pattern
+        return
+    
+    # Look for sequences of 2-5 actions that repeat
+    for sequence_length in range(2, min(6, len(action_history) // 2 + 1)):
+        # Get the most recent sequence
+        recent_sequence = action_history[-sequence_length:]
+        
+        # Check if this sequence appeared before
+        for i in range(len(action_history) - sequence_length * 2, -1, -1):
+            candidate_sequence = action_history[i:i + sequence_length]
+            
+            # Compare sequences (ignoring timestamps and IDs)
+            if sequences_match(recent_sequence, candidate_sequence):
+                # Found a pattern!
+                pattern_key = sequence_to_key(recent_sequence)
+                
+                # Check if we already detected this pattern
+                existing_pattern = None
+                for p in detected_patterns:
+                    if p['key'] == pattern_key:
+                        existing_pattern = p
+                        break
+                
+                if existing_pattern:
+                    existing_pattern['count'] += 1
+                    existing_pattern['last_seen'] = datetime.now().isoformat()
+                    
+                    # Offer automation after threshold repetitions
+                    if existing_pattern['count'] == pattern_threshold and not existing_pattern.get('offered'):
+                        existing_pattern['offered'] = True
+                        notify_pattern_detected(existing_pattern)
+                else:
+                    # New pattern detected
+                    new_pattern = {
+                        'key': pattern_key,
+                        'sequence': [a.copy() for a in recent_sequence],
+                        'count': 2,  # We found it twice (current + previous)
+                        'first_seen': candidate_sequence[0]['timestamp'],
+                        'last_seen': datetime.now().isoformat(),
+                        'offered': False
+                    }
+                    detected_patterns.append(new_pattern)
+                
+                return  # Only detect one pattern at a time
+
+def sequences_match(seq1, seq2):
+    """
+    Check if two action sequences match (ignoring timestamps and IDs)
+    """
+    if len(seq1) != len(seq2):
+        return False
+    
+    for a1, a2 in zip(seq1, seq2):
+        # Compare action types
+        if a1['type'] != a2['type']:
+            return False
+        
+        # Compare key details (ignore values that might change)
+        d1 = a1['details']
+        d2 = a2['details']
+        
+        # For different action types, compare different fields
+        if a1['type'] in ['click_button', 'click_link']:
+            # For clicks, compare element index
+            if d1.get('index') != d2.get('index'):
+                return False
+        elif a1['type'] in ['type_by_label', 'fill_input']:
+            # For typing, compare label/field but not value
+            if d1.get('label') != d2.get('label') and d1.get('index') != d2.get('index'):
+                return False
+        elif a1['type'] == 'navigate':
+            # For navigation, compare URL
+            if d1.get('url') != d2.get('url'):
+                return False
+    
+    return True
+
+def sequence_to_key(sequence):
+    """
+    Convert action sequence to a unique key for identification
+    """
+    key_parts = []
+    for action in sequence:
+        action_type = action['type']
+        details = action['details']
+        
+        if action_type in ['click_button', 'click_link']:
+            key_parts.append(f"{action_type}_{details.get('index', 'unknown')}")
+        elif action_type in ['type_by_label', 'fill_input']:
+            key_parts.append(f"{action_type}_{details.get('label', details.get('index', 'unknown'))}")
+        elif action_type == 'navigate':
+            key_parts.append(f"{action_type}_{details.get('url', 'unknown')}")
+        else:
+            key_parts.append(action_type)
+    
+    return "->".join(key_parts)
+
+def notify_pattern_detected(pattern):
+    """
+    Notify user that a repetitive pattern was detected
+    """
+    print("\n" + "="*60)
+    print("🔍 PATTERN DETECTED! (Watch & Learn)")
+    print("="*60)
+    print(f"I noticed you've repeated this sequence {pattern['count']} times:")
+    print()
+    
+    for i, action in enumerate(pattern['sequence'], 1):
+        action_desc = get_action_description(action)
+        print(f"  {i}. {action_desc}")
+    
+    print()
+    print("💡 Would you like me to automate this for you?")
+    print("   • Type 'y' to create an automation")
+    print("   • Type 'n' to ignore this pattern")
+    print("   • Type 's' to save as a template")
+    print("="*60)
+
+def get_action_description(action):
+    """
+    Get human-readable description of an action
+    """
+    action_type = action['type']
+    details = action['details']
+    
+    descriptions = {
+        'click_button': f"Click button [{details.get('index', '?')}]",
+        'click_link': f"Click link [{details.get('index', '?')}]",
+        'fill_input': f"Fill input [{details.get('index', '?')}] with text",
+        'type_input': f"Type in input [{details.get('index', '?')}]",
+        'type_by_label': f"Type in field '{details.get('label', '?')}'",
+        'fill_textarea': f"Fill textarea [{details.get('index', '?')}]",
+        'type_textarea': f"Type in textarea [{details.get('index', '?')}]",
+        'navigate': f"Navigate to {details.get('url', '?')}",
+        'click_by_text': f"Click '{details.get('text', '?')}'",
+        'auto_fill_form': "Auto-fill form"
+    }
+    
+    return descriptions.get(action_type, f"{action_type}")
+
+def create_automation_from_pattern(pattern, name=None):
+    """
+    Create a reusable automation from a detected pattern
+    """
+    if name is None:
+        name = input("\nEnter name for this automation: ").strip()
+        if not name:
+            name = f"pattern_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+    
+    # Convert pattern to session format
+    session_actions = []
+    for action in pattern['sequence']:
+        session_actions.append({
+            'type': action['type'],
+            **action['details'],
+            'description': get_action_description(action)
+        })
+    
+    # Save as session
+    if not os.path.exists('sessions'):
+        os.makedirs('sessions')
+    
+    filepath = f"sessions/{name}.json"
+    
+    try:
+        with open(filepath, 'w') as f:
+            json.dump(session_actions, f, indent=2)
+        
+        print(f"\n✅ Automation saved as '{name}'")
+        print(f"   File: {filepath}")
+        print(f"   Actions: {len(session_actions)}")
+        print(f"\n💡 You can replay this anytime with Menu Option #7")
+        
+        return True
+    except Exception as e:
+        print(f"\n✗ Error saving automation: {e}")
+        return False
+
+def check_for_pattern_prompts():
+    """
+    Check if there are any patterns that need user attention
+    Returns True if user wants to create automation
+    """
+    global detected_patterns
+    
+    for pattern in detected_patterns:
+        if pattern.get('offered') and not pattern.get('handled'):
+            notify_pattern_detected(pattern)
+            
+            response = input("\nYour choice (y/n/s): ").strip().lower()
+            pattern['handled'] = True
+            
+            if response == 'y':
+                # Create automation
+                create_automation_from_pattern(pattern)
+                return True
+            elif response == 's':
+                # Save as template
+                create_automation_from_pattern(pattern)
+                return True
+            elif response == 'n':
+                print("Pattern ignored. I'll keep watching for other patterns.")
+    
+    return False
+
+def toggle_watch_and_learn():
+    """Toggle Watch & Learn feature on/off"""
+    global watch_and_learn_enabled
+    
+    watch_and_learn_enabled = not watch_and_learn_enabled
+    
+    if watch_and_learn_enabled:
+        print("\n👁️ Watch & Learn ENABLED")
+        print("   I'll observe your actions and detect repetitive patterns")
+        print("   When I notice you repeating something, I'll offer to automate it")
+    else:
+        print("\n👁️ Watch & Learn DISABLED")
+        print("   Pattern detection turned off")
+
+def view_detected_patterns():
+    """View all detected patterns"""
+    global detected_patterns
+    
+    if not detected_patterns:
+        print("\n📊 No patterns detected yet")
+        print("   Keep working and I'll watch for repetitive actions!")
+        return
+    
+    print("\n📊 Detected Patterns:")
+    print("="*60)
+    
+    for i, pattern in enumerate(detected_patterns):
+        print(f"\n[{i}] Pattern (repeated {pattern['count']} times):")
+        for j, action in enumerate(pattern['sequence'], 1):
+            print(f"    {j}. {get_action_description(action)}")
+        
+        if pattern.get('handled'):
+            print("    Status: ✓ Handled")
+        elif pattern.get('offered'):
+            print("    Status: ⏳ Waiting for response")
+        else:
+            print("    Status: 👁️ Watching")
+    
+    print("="*60)
+    
+    # Offer to create automation from any pattern
+    create_choice = input("\nCreate automation from pattern? (enter number or 'n'): ").strip()
+    
+    if create_choice.isdigit():
+        idx = int(create_choice)
+        if 0 <= idx < len(detected_patterns):
+            create_automation_from_pattern(detected_patterns[idx])
+
+# ============================================================================
+# INTELLIGENT WORKFLOW LEARNING
+# ============================================================================
+
+def add_conditional_logic_to_session(session_actions):
+    """
+    Add intelligent conditional logic to session actions
+    """
+    print("\n🧠 Intelligent Workflow Enhancement")
+    print("="*60)
+    print("Adding smart error handling and conditional logic...")
+    
+    enhanced_actions = []
+    
+    for i, action in enumerate(session_actions):
+        # Wrap each action with error handling
+        enhanced_action = action.copy()
+        enhanced_action['error_handling'] = {
+            'max_retries': 3,
+            'retry_delay': 1.0,
+            'on_error': 'continue',  # continue, stop, or skip
+            'fallback_actions': []
+        }
+        
+        # Add conditional checks based on action type
+        if action['type'] in ['click_button', 'click_link', 'click_by_text']:
+            enhanced_action['conditions'] = {
+                'wait_for_visible': True,
+                'wait_for_clickable': True,
+                'timeout': 10000
+            }
+            # Add fallback: try alternative selectors
+            enhanced_action['error_handling']['fallback_actions'].append({
+                'type': 'find_similar',
+                'description': 'Try to find similar element by text'
+            })
+        
+        elif action['type'] in ['type_by_label', 'fill_input']:
+            enhanced_action['conditions'] = {
+                'wait_for_enabled': True,
+                'clear_before_type': True,
+                'verify_value': True
+            }
+            # Add fallback: try to find field by different attributes
+            enhanced_action['error_handling']['fallback_actions'].append({
+                'type': 'find_by_placeholder',
+                'description': 'Try finding by placeholder if label fails'
+            })
+        
+        elif action['type'] == 'navigate':
+            enhanced_action['conditions'] = {
+                'wait_for_load': True,
+                'verify_url': True,
+                'load_timeout': 30000
+            }
+            # Add retry on network errors
+            enhanced_action['error_handling']['max_retries'] = 5
+            enhanced_action['error_handling']['on_error'] = 'retry'
+        
+        enhanced_actions.append(enhanced_action)
+    
+    print(f"✓ Enhanced {len(enhanced_actions)} actions with intelligent logic")
+    return enhanced_actions
+
+def detect_workflow_patterns(session_actions):
+    """
+    Detect common workflow patterns and suggest improvements
+    """
+    patterns_found = []
+    
+    # Detect login pattern
+    if any('password' in str(a.get('label', '')).lower() or 
+           a.get('type') == 'fill_input' for a in session_actions):
+        has_username = any('user' in str(a.get('label', '')).lower() or 
+                          'email' in str(a.get('label', '')).lower() for a in session_actions)
+        has_submit = any('click' in a.get('type', '') for a in session_actions)
+        
+        if has_username and has_submit:
+            patterns_found.append({
+                'name': 'Login Flow',
+                'confidence': 0.9,
+                'suggestion': 'Add session persistence check to skip login if already logged in'
+            })
+    
+    # Detect form fill pattern
+    type_actions = [a for a in session_actions if 'type' in a.get('type', '') or 'fill' in a.get('type', '')]
+    if len(type_actions) >= 3:
+        patterns_found.append({
+            'name': 'Multi-Field Form',
+            'confidence': 0.85,
+            'suggestion': 'Add validation checks after each field to ensure values are accepted'
+        })
+    
+    # Detect navigation pattern
+    nav_actions = [a for a in session_actions if a.get('type') == 'navigate']
+    if len(nav_actions) > 1:
+        patterns_found.append({
+            'name': 'Multi-Page Navigation',
+            'confidence': 0.8,
+            'suggestion': 'Add breadcrumb tracking to resume from last successful page'
+        })
+    
+    # Detect repetitive clicks (pagination)
+    click_actions = [a for a in session_actions if 'click' in a.get('type', '')]
+    if len(click_actions) >= 3:
+        similar_clicks = sum(1 for i in range(len(click_actions)-1) 
+                           if click_actions[i].get('text') == click_actions[i+1].get('text'))
+        if similar_clicks >= 2:
+            patterns_found.append({
+                'name': 'Repetitive Clicking (Pagination?)',
+                'confidence': 0.75,
+                'suggestion': 'Convert to loop that continues until element disappears'
+            })
+    
+    return patterns_found
+
+def suggest_workflow_improvements(session_actions):
+    """
+    Analyze session and suggest intelligent improvements
+    """
+    print("\n🧠 Analyzing Workflow...")
+    patterns = detect_workflow_patterns(session_actions)
+    
+    if not patterns:
+        print("✓ No obvious improvements detected")
+        return session_actions
+    
+    print(f"\n💡 Found {len(patterns)} improvement opportunities:")
+    print("="*60)
+    
+    for i, pattern in enumerate(patterns, 1):
+        print(f"\n{i}. {pattern['name']} (confidence: {pattern['confidence']*100:.0f}%)")
+        print(f"   💡 {pattern['suggestion']}")
+    
+    print("="*60)
+    
+    enhance = input("\n🚀 Apply intelligent enhancements? (y/n): ").strip().lower()
+    
+    if enhance == 'y':
+        return add_conditional_logic_to_session(session_actions)
+    
+    return session_actions
+
+def create_loop_workflow(action_sequence, loop_condition):
+    """
+    Create a workflow that loops until a condition is met
+    """
+    loop_workflow = {
+        'type': 'loop',
+        'actions': action_sequence,
+        'condition': loop_condition,
+        'max_iterations': 100,  # Safety limit
+        'description': f'Repeat actions until {loop_condition["type"]}'
+    }
+    
+    return loop_workflow
+
+def add_error_recovery(action, common_errors):
+    """
+    Add intelligent error recovery based on common error patterns
+    """
+    recovery_strategies = {
+        'element_not_found': [
+            {'action': 'wait', 'duration': 2000, 'description': 'Wait for dynamic content'},
+            {'action': 'scroll_into_view', 'description': 'Scroll element into viewport'},
+            {'action': 'refresh_page', 'description': 'Refresh and retry'}
+        ],
+        'timeout': [
+            {'action': 'increase_timeout', 'multiplier': 2, 'description': 'Double the timeout'},
+            {'action': 'check_network', 'description': 'Check for slow network'}
+        ],
+        'stale_element': [
+            {'action': 're_scan', 'description': 'Re-scan page for fresh elements'},
+            {'action': 'retry', 'description': 'Retry action immediately'}
+        ],
+        'not_clickable': [
+            {'action': 'wait_for_overlay', 'description': 'Wait for overlay to disappear'},
+            {'action': 'force_click', 'description': 'Use JavaScript click as fallback'}
+        ]
+    }
+    
+    action['error_recovery'] = {}
+    for error_type, strategies in recovery_strategies.items():
+        if error_type in common_errors:
+            action['error_recovery'][error_type] = strategies
+    
+    return action
+
+def chain_workflows(workflow1, workflow2, condition=None):
+    """
+    Chain two workflows together with optional condition
+    """
+    chained = {
+        'type': 'chained_workflow',
+        'workflows': [workflow1, workflow2],
+        'condition': condition or {'type': 'always'},
+        'description': f'Chain: {workflow1.get("name", "Workflow 1")} → {workflow2.get("name", "Workflow 2")}'
+    }
+    
+    return chained
+
+def smart_workflow_builder():
+    """
+    Interactive workflow builder with intelligent suggestions
+    """
+    print("\n🎯 Smart Workflow Builder")
+    print("="*60)
+    print("I'll help you build an intelligent workflow with:")
+    print("  • Automatic error handling")
+    print("  • Conditional logic")
+    print("  • Loop support")
+    print("  • Multi-path navigation")
+    print("="*60)
+    
+    workflow_type = input("\nWorkflow type?\n  1. Linear (step by step)\n  2. Conditional (if/else)\n  3. Loop (repeat until condition)\n  4. Multi-path (try alternatives)\nChoice: ").strip()
+    
+    if workflow_type == '1':
+        print("\n📝 Linear workflow - I'll add smart error handling automatically")
+        return 'linear'
+    elif workflow_type == '2':
+        print("\n🔀 Conditional workflow - Define your conditions")
+        condition = input("If what condition? (e.g., 'element exists', 'text contains'): ").strip()
+        return {'type': 'conditional', 'condition': condition}
+    elif workflow_type == '3':
+        print("\n🔄 Loop workflow - Define stop condition")
+        stop_condition = input("Stop when? (e.g., 'button disappears', 'page number > 10'): ").strip()
+        return {'type': 'loop', 'stop_condition': stop_condition}
+    elif workflow_type == '4':
+        print("\n🌐 Multi-path workflow - I'll try alternatives if primary fails")
+        return 'multi_path'
+    else:
+        print("Invalid choice, using linear workflow")
+        return 'linear'
+
+# ============================================================================
+# GEMINI API INTEGRATION FOR AUTO-RATING
+# ============================================================================
+
+def setup_gemini_api():
+    """Configure Gemini API with user's key"""
+    global user_preferences
+    
+    if not GEMINI_AVAILABLE:
+        print("\n⚠ Gemini API not available")
+        print("Install with: pip install google-generativeai")
+        return False
+    
+    api_key = user_preferences.get('gemini_api_key', '')
+    
+    if not api_key:
+        print("\n🔑 Gemini API Key Setup")
+        print("="*60)
+        print("Get your API key from: https://makersuite.google.com/app/apikey")
+        api_key = input("Enter your Gemini API key: ").strip()
+        
+        if api_key:
+            user_preferences['gemini_api_key'] = api_key
+            print("✓ API key saved to preferences")
+        else:
+            print("✗ No API key provided")
+            return False
+    
+    # Ask about model selection
+    print("\n🤖 Gemini Model Selection:")
+    print("="*60)
+    print("Available models:")
+    print("1. gemini-2.0-flash-exp (Recommended - Fast & Free)")
+    print("2. gemini-1.5-flash (Fast & Free)")
+    print("3. gemini-1.5-pro (More powerful)")
+    print("4. gemini-2.5-pro (Most powerful)")
+    print(f"\nCurrent model: {user_preferences.get('gemini_model', 'gemini-2.0-flash-exp')}")
+    
+    change_model = input("\nChange model? (y/n): ").strip().lower()
+    
+    if change_model == 'y':
+        model_choice = input("Enter choice (1-4): ").strip()
+        model_map = {
+            "1": "gemini-2.0-flash-exp",
+            "2": "gemini-1.5-flash",
+            "3": "gemini-1.5-pro",
+            "4": "gemini-2.5-pro"
+        }
+        
+        if model_choice in model_map:
+            user_preferences['gemini_model'] = model_map[model_choice]
+            print(f"✓ Model set to: {model_map[model_choice]}")
+    
+    try:
+        genai.configure(api_key=api_key)
+        print("✓ Gemini API configured")
+        return True
+    except Exception as e:
+        print(f"✗ Error configuring Gemini API: {e}")
+        return False
+
+def extract_response_text(page):
+    """Extract the model response text from the rating page"""
+    try:
+        # Try to find the response text - adjust selector based on actual page structure
+        response_texts = []
+        
+        # Strategy 1: Look for common response containers
+        selectors = [
+            'div[class*="response"]',
+            'div[class*="model-response"]',
+            'div[class*="output"]',
+            '[role="article"]',
+            'p',
+            'div.text'
+        ]
+        
+        for selector in selectors:
+            try:
+                elements = page.locator(selector).all()
+                for elem in elements[:5]:  # Check first 5
+                    text = elem.inner_text().strip()
+                    if len(text) > 50:  # Likely a response if longer than 50 chars
+                        response_texts.append(text)
+            except:
+                continue
+        
+        if response_texts:
+            # Return the longest text (likely the main response)
+            return max(response_texts, key=len)
+        
+        # Fallback: get all visible text
+        body_text = page.locator('body').inner_text()
+        return body_text[:5000]  # Limit to first 5000 chars
+        
+    except Exception as e:
+        print(f"⚠ Error extracting response text: {e}")
+        return None
+
+def get_gemini_rating(response_text, category="overall", scale_type="1-3"):
+    """
+    Send response to Gemini for rating evaluation
+    Supports different scales: 1-3, 1-5, -2 to +2, etc.
+    """
+    if not GEMINI_AVAILABLE:
+        print("⚠ Gemini API not available")
+        return None
+    
+    try:
+        model = genai.GenerativeModel(user_preferences.get('gemini_model', 'gemini-2.0-flash-exp'))
+        
+        # Define scale-specific prompts
+        scale_configs = {
+            "1-3": {
+                "scale": "1-3",
+                "options": "1 = Major Issues, 2 = Minor Issues, 3 = No Issues",
+                "pattern": r'\b([123])\b'
+            },
+            "1-5": {
+                "scale": "1-5",
+                "options": "1 = Highly unsatisfying, 2 = Slightly unsatisfying, 3 = Okay, 4 = Slightly satisfying, 5 = Highly satisfying",
+                "pattern": r'\b([12345])\b'
+            },
+            "-2-2": {
+                "scale": "-2 to +2",
+                "options": "-2 = Too Short (Major Issue), -1 = Just Right (No Issue), 0 = Just Right, +1 = Just Right, +2 = Too Verbose (Major Issue)",
+                "pattern": r'\b(-?[012])\b'
+            }
+        }
+        
+        config = scale_configs.get(scale_type, scale_configs["1-3"])
+        
+        # Create rating prompt
+        prompt = f"""You are evaluating a model response for quality. 
+
+Category: {category}
+
+Response to evaluate:
+{response_text}
+
+Rate this response on a scale of {config['scale']}:
+{config['options']}
+
+Consider:
+- Localization: Is the language appropriate and natural for the intended audience?
+- Instruction Following: Does it follow all requirements in the prompt?
+- Truthfulness: Is the information accurate and reliable?
+- Overall Quality: Grammar, coherence, helpfulness
+
+Respond with ONLY the number/value and a brief reason.
+Format: NUMBER: Reason
+
+Example: 3: Response is well-written, accurate, and follows all instructions perfectly."""
+
+        response = model.generate_content(prompt)
+        rating_text = response.text.strip()
+        
+        # Extract number from response using pattern
+        import re
+        match = re.search(config['pattern'], rating_text)
+        if match:
+            rating_value = match.group(1)
+            # Convert to appropriate type
+            if scale_type == "-2-2":
+                return int(rating_value)
+            else:
+                return int(rating_value)
+        
+        print(f"⚠ Could not parse rating from: {rating_text}")
+        return None
+            
+    except Exception as e:
+        print(f"✗ Error getting Gemini rating: {e}")
+        return None
+
+def auto_rate_with_gemini(page):
+    """
+    Automatically rate the response using Gemini API
+    Supports multiple categories and different rating scales
+    """
+    print("\n🤖 Gemini Auto-Rating")
+    print("="*60)
+    
+    # Check if Gemini is configured
+    if not setup_gemini_api():
+        return
+    
+    # Extract response text
+    print("📝 Extracting response text...")
+    response_text = extract_response_text(page)
+    
+    if not response_text:
+        print("✗ Could not extract response text")
+        print("💡 Tip: Make sure you're on the rating page with the model response visible")
+        return
+    
+    print(f"✓ Extracted {len(response_text)} characters")
+    print(f"Preview: {response_text[:100]}...")
+    
+    # Ask for rating configuration
+    print("\n📊 Rating Configuration:")
+    print("1. Single category (quick)")
+    print("2. Multiple categories (batch)")
+    
+    mode = input("\nChoice (1/2): ").strip()
+    
+    if mode == '2':
+        # Batch mode
+        print("\n� Enter categories to rate (one per line, empty line to finish):")
+        print("Examples: 'Localization', 'Instruction Following', 'Truthfulness', etc.")
+        
+        categories = []
+        while True:
+            cat = input(f"Category {len(categories) + 1} (or Enter to finish): ").strip()
+            if not cat:
+                break
+            
+            # Ask for scale type
+            print(f"\nScale for '{cat}':")
+            print("1. 1-3 scale (Major/Minor/No Issues)")
+            print("2. 1-5 scale (Highly unsatisfying to Highly satisfying)")
+            print("3. -2 to +2 scale (Too Short/Just Right/Too Verbose)")
+            scale_choice = input("Choice (1/2/3): ").strip()
+            
+            scale_map = {"1": "1-3", "2": "1-5", "3": "-2-2"}
+            scale_type = scale_map.get(scale_choice, "1-3")
+            
+            categories.append({"name": cat, "scale": scale_type})
+        
+        if not categories:
+            print("✗ No categories entered")
+            return
+        
+        # Rate all categories
+        all_ratings = []
+        print(f"\n⏳ Getting Gemini ratings for {len(categories)} categories...")
+        
+        for i, cat_info in enumerate(categories, 1):
+            cat_name = cat_info["name"]
+            scale_type = cat_info["scale"]
+            
+            print(f"\n[{i}/{len(categories)}] Rating '{cat_name}' (scale: {scale_type})...")
+            rating = get_gemini_rating(response_text, cat_name, scale_type)
+            
+            if rating is not None:
+                print(f"  ✓ Gemini rated: {rating}")
+                all_ratings.append(str(rating))
+            else:
+                print(f"  ✗ Could not get rating for '{cat_name}'")
+                manual = input(f"  Enter manual rating for '{cat_name}' (or 's' to skip): ").strip()
+                if manual.lower() != 's':
+                    all_ratings.append(manual)
+        
+        # Display all ratings
+        print("\n📊 All Ratings:")
+        for i, (cat_info, rating) in enumerate(zip(categories, all_ratings), 1):
+            print(f"  {i}. {cat_info['name']}: {rating}")
+        
+        # Ask to auto-click all
+        print(f"\n🖱️  Click all {len(all_ratings)} rating buttons automatically?")
+        print(f"Will click in this order: {' '.join(all_ratings)}")
+        auto_click = input("Proceed? (y/n): ").strip().lower()
+        
+        if auto_click == 'y':
+            clicked_count = 0
+            for i, rating in enumerate(all_ratings, 1):
+                try:
+                    # Try multiple click methods
+                    success = False
+                    
+                    # Method 1: Exact button match
+                    try:
+                        button = page.get_by_role("button", name=rating, exact=True).first
+                        if button.count() > 0:
+                            button.click()
+                            success = True
+                    except:
+                        pass
+                    
+                    # Method 2: Text match
+                    if not success:
+                        try:
+                            page.get_by_text(rating, exact=True).first.click()
+                            success = True
+                        except:
+                            pass
+                    
+                    # Method 3: Button locator
+                    if not success:
+                        try:
+                            page.locator(f'button:has-text("{rating}")').first.click()
+                            success = True
+                        except:
+                            pass
+                    
+                    if success:
+                        print(f"  [{i}/{len(all_ratings)}] ✓ Clicked rating {rating}")
+                        clicked_count += 1
+                        time.sleep(0.3)
+                    else:
+                        print(f"  [{i}/{len(all_ratings)}] ✗ Could not click rating {rating}")
+                        
+                except Exception as e:
+                    print(f"  [{i}/{len(all_ratings)}] ✗ Error: {e}")
+            
+            print(f"\n✓ Clicked {clicked_count}/{len(all_ratings)} ratings successfully!")
+    
+    else:
+        # Single category mode (original behavior)
+        category = input("Enter category name (e.g., Localization) or press Enter for 'Overall': ").strip()
+        if not category:
+            category = "Overall"
+        
+        # Ask for scale type
+        print("\nRating Scale:")
+        print("1. 1-3 scale (Major/Minor/No Issues)")
+        print("2. 1-5 scale (Highly unsatisfying to Highly satisfying)")
+        print("3. -2 to +2 scale (Too Short/Just Right/Too Verbose)")
+        scale_choice = input("Choice (1/2/3): ").strip()
+        
+        scale_map = {"1": "1-3", "2": "1-5", "3": "-2-2"}
+        scale_type = scale_map.get(scale_choice, "1-3")
+        
+        print(f"\n⏳ Getting Gemini rating for '{category}'...")
+        rating = get_gemini_rating(response_text, category, scale_type)
+        
+        if rating is not None:
+            print(f"✓ Gemini rated: {rating}")
+            
+            # Ask to click the button
+            auto_click = input(f"\n🖱️  Click rating button '{rating}'? (y/n): ").strip().lower()
+            
+            if auto_click == 'y':
+                try:
+                    success = False
+                    
+                    # Try multiple methods
+                    button = page.get_by_role("button", name=str(rating), exact=True).first
+                    if button.count() > 0:
+                        button.click()
+                        success = True
+                    else:
+                        page.get_by_text(str(rating), exact=True).first.click()
+                        success = True
+                    
+                    if success:
+                        print(f"✓ Clicked rating {rating}")
+                except Exception as e:
+                    print(f"⚠ Could not auto-click: {e}")
+                    print(f"💡 Please manually click button '{rating}'")
+        else:
+            print(f"✗ Could not get rating for '{category}'")
+    
+    print("\n✅ Auto-rating complete!")
+
+def simple_rating_click(page):
+    """
+    Simple method: Click multiple rating buttons in sequence
+    Supports different rating scales (1-3, 1-5, -2 to +2, etc.)
+    """
+    print("\n🔢 Simple Batch Rating Click")
+    print("="*60)
+    print("Enter ratings for multiple categories in one go!")
+    print("\nExamples:")
+    print("  • For 1-3 scale: Enter '2 3 1' to rate three categories")
+    print("  • For 1-5 scale: Enter '4 3 5' to rate three categories")
+    print("  • For -2 to +2 scale: Enter '1 0 -1' to rate three categories")
+    print("  • Mixed scales: Just enter the numbers in order")
+    print("\n💡 Tip: Enter ratings in the order they appear on the page")
+    print("="*60)
+    
+    ratings_input = input("\nEnter all ratings separated by spaces (e.g., '2 3 1') or 'c' to cancel: ").strip()
+    
+    if ratings_input.lower() == 'c':
+        print("Cancelled.")
+        return
+    
+    # Parse ratings - split by spaces and handle negative numbers
+    ratings = ratings_input.split()
+    
+    if not ratings:
+        print("✗ No ratings entered")
+        return
+    
+    print(f"\n📊 You entered {len(ratings)} rating(s): {', '.join(ratings)}")
+    confirm = input("Proceed with clicking these ratings? (y/n): ").strip().lower()
+    
+    if confirm != 'y':
+        print("Cancelled.")
+        return
+    
+    # Click each rating button in sequence
+    clicked_count = 0
+    failed_count = 0
+    
+    for i, rating in enumerate(ratings, 1):
+        print(f"\n[{i}/{len(ratings)}] Clicking rating '{rating}'...")
+        
+        try:
+            success = False
+            
+            # Method 1: Click by role and exact name
+            try:
+                button = page.get_by_role("button", name=rating, exact=True).first
+                if button.count() > 0:
+                    button.click()
+                    success = True
+            except:
+                pass
+            
+            # Method 2: Click by exact text
+            if not success:
+                try:
+                    page.get_by_text(rating, exact=True).first.click()
+                    success = True
+                except:
+                    pass
+            
+            # Method 3: Try finding button with this text
+            if not success:
+                try:
+                    page.locator(f'button:has-text("{rating}")').first.click()
+                    success = True
+                except:
+                    pass
+            
+            # Method 4: Try label-based (for radio buttons)
+            if not success:
+                try:
+                    page.locator(f'label:has-text("{rating}")').first.click()
+                    success = True
+                except:
+                    pass
+            
+            # Method 5: Try input with value attribute
+            if not success:
+                try:
+                    page.locator(f'input[value="{rating}"]').first.click()
+                    success = True
+                except:
+                    pass
+            
+            if success:
+                print(f"  ✓ Clicked rating '{rating}'")
+                clicked_count += 1
+                time.sleep(0.3)  # Small delay between clicks
+            else:
+                print(f"  ✗ Could not find rating button '{rating}'")
+                failed_count += 1
+                
+                # Ask if user wants to continue
+                if i < len(ratings):
+                    cont = input(f"  ⚠ Continue with remaining {len(ratings) - i} ratings? (y/n): ").strip().lower()
+                    if cont != 'y':
+                        print("  Stopped.")
+                        break
+        
+        except Exception as e:
+            print(f"  ✗ Error clicking '{rating}': {e}")
+            failed_count += 1
+    
+    # Summary
+    print("\n" + "="*60)
+    print(f"📊 Rating Summary:")
+    print(f"  ✓ Successfully clicked: {clicked_count}/{len(ratings)}")
+    if failed_count > 0:
+        print(f"  ✗ Failed: {failed_count}/{len(ratings)}")
+    print("="*60)
+
+def get_session_templates():
+    """Get built-in session templates"""
+    templates = {
+        'login': {
+            'name': 'Generic Login Form',
+            'description': 'Fill username/email and password, then click login button',
+            'variables': ['{{username}}', '{{password}}'],
+            'actions': [
+                {
+                    'type': 'type_by_label',
+                    'label': 'email',
+                    'value': '{{username}}',
+                    'base_delay': 100,
+                    'description': 'Enter username/email'
+                },
+                {
+                    'type': 'type_by_label',
+                    'label': 'password',
+                    'value': '{{password}}',
+                    'base_delay': 100,
+                    'description': 'Enter password'
+                },
+                {
+                    'type': 'click_by_text',
+                    'text': 'login',
+                    'element_type': 'button',
+                    'description': 'Click login button'
+                }
+            ]
+        },
+        'search': {
+            'name': 'Search and Select Result',
+            'description': 'Enter search query and click first result',
+            'variables': ['{{query}}'],
+            'actions': [
+                {
+                    'type': 'type_by_label',
+                    'label': 'search',
+                    'value': '{{query}}',
+                    'base_delay': 100,
+                    'description': 'Enter search query'
+                },
+                {
+                    'type': 'click_by_text',
+                    'text': 'search',
+                    'element_type': 'button',
+                    'description': 'Click search button'
+                }
+            ]
+        },
+        'form_fill': {
+            'name': 'Generic Form Fill',
+            'description': 'Auto-detect and fill all form fields',
+            'variables': [],
+            'actions': [
+                {
+                    'type': 'auto_fill_form',
+                    'description': 'Auto-fill detected form'
+                }
+            ]
+        },
+        'contact_form': {
+            'name': 'Contact Form',
+            'description': 'Fill typical contact form (name, email, message)',
+            'variables': ['{{name}}', '{{email}}', '{{message}}'],
+            'actions': [
+                {
+                    'type': 'type_by_label',
+                    'label': 'name',
+                    'value': '{{name}}',
+                    'base_delay': 100,
+                    'description': 'Enter name'
+                },
+                {
+                    'type': 'type_by_label',
+                    'label': 'email',
+                    'value': '{{email}}',
+                    'base_delay': 100,
+                    'description': 'Enter email'
+                },
+                {
+                    'type': 'type_by_label',
+                    'label': 'message',
+                    'value': '{{message}}',
+                    'base_delay': 100,
+                    'description': 'Enter message'
+                },
+                {
+                    'type': 'click_by_text',
+                    'text': 'submit',
+                    'element_type': 'button',
+                    'description': 'Click submit'
+                }
+            ]
+        },
+        'gemini_rating': {
+            'name': 'Gemini Model Rating',
+            'description': 'Click rating buttons (1-3) based on Gemini feedback',
+            'variables': ['{{rating}}'],
+            'actions': [
+                {
+                    'type': 'click_by_text',
+                    'text': '{{rating}}',
+                    'element_type': 'button',
+                    'description': 'Click rating button'
+                }
+            ]
+        }
+    }
+    return templates
+
+def apply_template(page, template_name):
+    """Apply a session template with user-provided variables"""
+    templates = get_session_templates()
+    
+    if template_name not in templates:
+        print(f"✗ Template '{template_name}' not found")
+        return False
+    
+    template = templates[template_name]
+    
+    print(f"\n📋 Template: {template['name']}")
+    print(f"   {template['description']}")
+    
+    # Collect variable values
+    variables = {}
+    if template['variables']:
+        print("\n✏️  Enter values for template variables:")
+        for var in template['variables']:
+            # Check clipboard for smart suggestions
+            clipboard_text = get_clipboard_text()
+            var_name = var.replace('{{', '').replace('}}', '')
+            
+            if clipboard_text and user_preferences.get('clipboard_auto_suggest', True):
+                use_clipboard = input(f"{var} (📋 '{clipboard_text[:30]}...' or custom): ").strip()
+                if not use_clipboard:
+                    variables[var] = clipboard_text
+                else:
+                    variables[var] = use_clipboard
+            else:
+                variables[var] = input(f"{var}: ").strip()
+    
+    # Execute template actions
+    print(f"\n⚡ Executing {len(template['actions'])} actions...")
+    
+    for i, action in enumerate(template['actions']):
+        print(f"[{i+1}/{len(template['actions'])}] {action['description']}")
+        
+        # Replace variables in action
+        action_copy = action.copy()
+        for var, value in variables.items():
+            if 'value' in action_copy and isinstance(action_copy['value'], str):
+                action_copy['value'] = action_copy['value'].replace(var, value)
+            if 'text' in action_copy and isinstance(action_copy['text'], str):
+                action_copy['text'] = action_copy['text'].replace(var, value)
+            if 'label' in action_copy and isinstance(action_copy['label'], str):
+                action_copy['label'] = action_copy['label'].replace(var, value)
+        
+        # Execute action
+        try:
+            if action_copy['type'] == 'type_by_label':
+                label = action_copy['label']
+                value = action_copy['value']
+                base_delay = action_copy.get('base_delay', 100)
+                
+                # Find element by label
+                element = None
+                try:
+                    element = page.get_by_placeholder(label, exact=False).first
+                    if element.count() == 0:
+                        element = page.get_by_label(label, exact=False).first
+                    if element.count() == 0:
+                        element = page.locator(f"input[name*='{label}' i], textarea[name*='{label}' i]").first
+                except:
+                    pass
+                
+                if element and element.count() > 0:
+                    safe_type(element, value, base_delay, f"Type in '{label}'")
+                else:
+                    print(f"  ⚠ Could not find field: {label}")
+            
+            elif action_copy['type'] == 'click_by_text':
+                text = action_copy['text']
+                element_type = action_copy.get('element_type', 'any')
+                
+                if element_type == 'button':
+                    element = page.get_by_role("button", name=text).first
+                else:
+                    element = page.get_by_text(text, exact=False).first
+                
+                if element.count() > 0:
+                    safe_click(element, f"Click '{text}'")
+                else:
+                    print(f"  ⚠ Could not find element: {text}")
+            
+            elif action_copy['type'] == 'auto_fill_form':
+                auto_fill_form(page)
+            
+            time.sleep(0.5)
+            
+        except Exception as e:
+            print(f"  ✗ Error: {e}")
+            continue_prompt = input("  Continue with next action? (y/n): ").strip().lower()
+            if continue_prompt != 'y':
+                return False
+    
+    print("\n✅ Template execution completed!")
+    return True
+
+def list_templates():
+    """List all available templates"""
+    templates = get_session_templates()
+    
+    print("\n📚 Available Templates:")
+    print("=" * 60)
+    
+    for i, (key, template) in enumerate(templates.items()):
+        print(f"\n[{i}] {template['name']} ('{key}')")
+        print(f"    {template['description']}")
+        if template['variables']:
+            print(f"    Variables: {', '.join(template['variables'])}")
+        print(f"    Actions: {len(template['actions'])}")
+    
+    print("=" * 60)
+
+
+
 
 def find_element_by_text(page, element_type, text, exact_match=False):
     """
@@ -482,7 +1883,150 @@ def auto_fill_form(page):
             continue
     
     print("\n✅ Form auto-fill completed!")
-    print("💡 Review the form before submitting!")
+    
+    # Now detect and offer to click buttons
+    detect_and_click_button(page)
+
+def detect_and_click_button(page):
+    """
+    Detect common buttons after form fill and offer to click one
+    """
+    print("\n🔍 Looking for continue buttons...")
+    
+    # Common button patterns to look for
+    common_buttons = ['next', 'continue', 'submit', 'save', 'proceed', 'confirm', 'send', 'finish']
+    
+    found_buttons = []
+    
+    try:
+        # Find all buttons on the page - expanded detection
+        all_buttons = page.locator('button, input[type="button"], input[type="submit"], a.btn, a.button, [role="button"], a[class*="button"], a[class*="btn"]').all()
+        
+        for idx, btn in enumerate(all_buttons[:20]):  # Increased to 20
+            try:
+                # Get button text from multiple sources
+                text = ''
+                try:
+                    text = btn.inner_text().strip()
+                except:
+                    pass
+                
+                value = btn.get_attribute('value') or ''
+                aria_label = btn.get_attribute('aria-label') or ''
+                title = btn.get_attribute('title') or ''
+                class_name = btn.get_attribute('class') or ''
+                
+                # Combine all text sources
+                btn_text = text or value or aria_label or title or 'Unnamed button'
+                
+                # Check visibility - include disabled buttons too
+                is_visible = False
+                try:
+                    is_visible = btn.is_visible()
+                except:
+                    # If visibility check fails, assume it's visible
+                    is_visible = True
+                
+                # Check if disabled
+                is_disabled = btn.is_disabled() if hasattr(btn, 'is_disabled') else False
+                
+                if is_visible:
+                    found_buttons.append({
+                        'index': idx,
+                        'element': btn,
+                        'text': btn_text,
+                        'is_common': any(keyword in btn_text.lower() for keyword in common_buttons),
+                        'is_disabled': is_disabled,
+                        'class': class_name[:40] if class_name else ''  # Show class for context
+                    })
+            except Exception as e:
+                continue
+        
+        if not found_buttons:
+            print("  ℹ️  No buttons found")
+            print("💡 Review the form before submitting manually!")
+            return
+        
+        # Display found buttons
+        print(f"\n🔘 Found {len(found_buttons)} button(s):")
+        
+        # Show common buttons first
+        common_first = sorted(found_buttons, key=lambda x: (not x['is_common'], x['index']))
+        
+        for btn_info in common_first[:10]:  # Show max 10
+            star = "⭐" if btn_info['is_common'] else "  "
+            disabled = " [DISABLED]" if btn_info.get('is_disabled') else ""
+            class_info = f" ({btn_info['class']})" if btn_info.get('class') else ""
+            print(f"  {star} [{btn_info['index']}] {btn_info['text']}{disabled}{class_info}")
+        
+        if len(found_buttons) > 10:
+            print(f"  ... and {len(found_buttons) - 10} more (type 'all' to see all)")
+        
+        print("\n" + "=" * 60)
+        print("Options:")
+        print("  • Type button text (e.g., 'Next')")
+        print("  • Type number (e.g., '0')")
+        print("  • Type 'all' to see all buttons")
+        print("  • Press Enter to skip")
+        print("=" * 60)
+        
+        choice = input("\n� Click button: ").strip()
+        
+        if not choice:
+            print("�💡 Review the form before submitting!")
+            return
+        
+        # Try to find button by text or index
+        selected_button = None
+        
+        # Check if it's a number (index)
+        try:
+            idx = int(choice)
+            for btn_info in found_buttons:
+                if btn_info['index'] == idx:
+                    selected_button = btn_info
+                    break
+        except ValueError:
+            # It's text, search by text
+            choice_lower = choice.lower()
+            for btn_info in found_buttons:
+                if choice_lower in btn_info['text'].lower():
+                    selected_button = btn_info
+                    break
+        
+        if not selected_button:
+            print(f"✗ Could not find button matching '{choice}'")
+            print("💡 Try using Option 11 (Click by Text) or Option 13 (CSS Selector) from the main menu")
+            return
+        
+        # Click the button
+        print(f"\n🖱️  Clicking '{selected_button['text']}'...")
+        
+        success, _, error = safe_click(selected_button['element'], f"Click {selected_button['text']}")
+        
+        if success:
+            print("  ✓ Button clicked!")
+            
+            # Wait for potential page change
+            print("  ⏳ Waiting for page to load...")
+            time.sleep(2)  # Give page time to load
+            
+            # Check if there are new forms
+            print("  🔍 Checking for new forms...")
+            new_forms = detect_forms(page)
+            
+            if new_forms:
+                print(f"  ✓ Found {len(new_forms)} new form(s)")
+                continue_fill = input("\n  Continue filling forms? (y/n): ").strip().lower()
+                if continue_fill == 'y':
+                    auto_fill_form(page)
+            else:
+                print("  ℹ️  No new forms detected")
+        else:
+            print(f"  ✗ Click failed: {error}")
+    
+    except Exception as e:
+        print(f"  ✗ Error detecting buttons: {e}")
 
 def get_edge_profile_path():
     """Get the default Edge profile path for the current user"""
@@ -697,11 +2241,17 @@ def scan_page_elements(page):
     """Scan and display interactive elements on the current page"""
     print("\n🔍 Scanning page for interactive elements...")
     
+    # Wait a bit for dynamic content to load
+    try:
+        page.wait_for_timeout(500)
+    except:
+        pass
+    
     element_types = {
         'buttons': 'button, input[type="button"], input[type="submit"]',
         'links': 'a[href]',
         'inputs': 'input[type="text"], input[type="email"], input[type="password"]',
-        'textareas': 'textarea',
+        'textareas': 'textarea, [role="textbox"], [contenteditable="true"]',  # Include contenteditable divs
         'selects': 'select',
         'checkboxes': 'input[type="checkbox"]',
         'radios': 'input[type="radio"]'
@@ -722,18 +2272,36 @@ def scan_page_elements(page):
                 name = elem.get_attribute('name') or ''
                 id_attr = elem.get_attribute('id') or ''
                 placeholder = elem.get_attribute('placeholder') or ''
+                aria_label = elem.get_attribute('aria-label') or ''
                 
                 info = f"  [{i}] "
-                if text:
-                    info += f"'{text}'"
-                elif name:
-                    info += f"name='{name}'"
-                elif id_attr:
-                    info += f"id='{id_attr}'"
-                elif placeholder:
-                    info += f"placeholder='{placeholder}'"
+                
+                # For textareas, prioritize placeholder over name (more descriptive)
+                if element_type == 'textareas':
+                    if placeholder:
+                        info += f"placeholder='{placeholder[:60]}'"
+                    elif aria_label:
+                        info += f"aria-label='{aria_label[:60]}'"
+                    elif text:
+                        info += f"'{text}'"
+                    elif name:
+                        info += f"name='{name}'"
+                    elif id_attr:
+                        info += f"id='{id_attr}'"
+                    else:
+                        info += "(no label)"
                 else:
-                    info += "(no label)"
+                    # For other elements, keep original priority
+                    if text:
+                        info += f"'{text}'"
+                    elif name:
+                        info += f"name='{name}'"
+                    elif id_attr:
+                        info += f"id='{id_attr}'"
+                    elif placeholder:
+                        info += f"placeholder='{placeholder}'"
+                    else:
+                        info += "(no label)"
                 
                 print(info)
             except:
@@ -787,6 +2355,9 @@ def interact_with_element(page):
             success, _, error = safe_click(page_elements['buttons'][idx], f"Click button [{idx}]")
             
             if success:
+                # Track for Watch & Learn
+                track_action('click_button', {'index': idx})
+                
                 if is_recording:
                     recorded_actions.append({
                         'type': 'click_button',
@@ -813,6 +2384,9 @@ def interact_with_element(page):
             success, _, error = safe_click(page_elements['links'][idx], f"Click link [{idx}]")
             
             if success:
+                # Track for Watch & Learn
+                track_action('click_link', {'index': idx})
+                
                 if is_recording:
                     recorded_actions.append({
                         'type': 'click_link',
@@ -1368,13 +2942,25 @@ def interact_with_element(page):
             
             if element.count() > 0:
                 success, _, error = safe_click(element, f"Click element '{text}'")
-                if success and is_recording:
-                    recorded_actions.append({
-                        'type': 'click_by_text',
-                        'text': text,
-                        'element_type': element_type,
-                        'description': f"Click '{text}'"
-                    })
+                if success:
+                    # Track for Watch & Learn
+                    track_action('click_by_text', {'text': text, 'element_type': element_type})
+                    
+                    # Wait for any dynamic content to load
+                    page.wait_for_timeout(800)
+                    
+                    # Ask if user wants to rescan
+                    rescan = input("\n🔄 Rescan page for new elements? (y/n) [default: y]: ").strip().lower()
+                    if rescan != 'n':
+                        scan_page_elements(page)
+                    
+                    if is_recording:
+                        recorded_actions.append({
+                            'type': 'click_by_text',
+                            'text': text,
+                            'element_type': element_type,
+                            'description': f"Click '{text}'"
+                        })
             else:
                 print(f"✗ Could not find element with text '{text}'")
                 print("💡 Tip: Try being more specific or use CSS selector (option 13)")
@@ -1479,14 +3065,18 @@ def interact_with_element(page):
                 
                 success, _, error = safe_type(element, value, base_delay, f"Type in '{label}'")
                 
-                if success and is_recording:
-                    recorded_actions.append({
-                        'type': 'type_by_label',
-                        'label': label,
-                        'value': value,
-                        'base_delay': base_delay,
-                        'description': f"Type in '{label}'"
-                    })
+                if success:
+                    # Track for Watch & Learn
+                    track_action('type_by_label', {'label': label})
+                    
+                    if is_recording:
+                        recorded_actions.append({
+                            'type': 'type_by_label',
+                            'label': label,
+                            'value': value,
+                            'base_delay': base_delay,
+                            'description': f"Type in '{label}'"
+                        })
             else:
                 print(f"✗ Could not find input with label/placeholder '{label}'")
                 print("💡 Tip: Try the exact label text or use CSS selector (option 13)")
@@ -1660,6 +3250,19 @@ def save_preferences():
     if auto_scan_input in ['y', 'n']:
         user_preferences['auto_scan'] = auto_scan_input == 'y'
     
+    print("\n⚡ New Features")
+    print("-" * 50)
+    
+    # Enable hotkeys
+    hotkey_input = input(f"Enable global hotkeys? (y/n, current: {'yes' if user_preferences.get('enable_hotkeys', False) else 'no'}): ").strip().lower()
+    if hotkey_input in ['y', 'n']:
+        user_preferences['enable_hotkeys'] = hotkey_input == 'y'
+    
+    # Clipboard auto-suggest
+    clipboard_input = input(f"Enable clipboard auto-suggest? (y/n, current: {'yes' if user_preferences.get('clipboard_auto_suggest', True) else 'no'}): ").strip().lower()
+    if clipboard_input in ['y', 'n']:
+        user_preferences['clipboard_auto_suggest'] = clipboard_input == 'y'
+    
     # Save to file
     if not os.path.exists('settings'):
         os.makedirs('settings')
@@ -1687,6 +3290,9 @@ def save_preferences():
         print(f"  • Auto-wait timeout: {user_preferences['auto_wait_timeout']}ms")
         print(f"  • Verify actions: {'Enabled' if user_preferences['verify_actions'] else 'Disabled'}")
         print(f"  • Auto-scan pages: {'Enabled' if user_preferences.get('auto_scan', True) else 'Disabled'}")
+        print(f"\n⚡ New Features:")
+        print(f"  • Global hotkeys: {'Enabled' if user_preferences.get('enable_hotkeys', False) else 'Disabled'}")
+        print(f"  • Clipboard auto-suggest: {'Enabled' if user_preferences.get('clipboard_auto_suggest', True) else 'Disabled'}")
     except Exception as e:
         print(f"✗ Error saving preferences: {e}")
 
@@ -1761,7 +3367,15 @@ def view_current_preferences():
     print(f"  • Auto-wait timeout: {user_preferences.get('auto_wait_timeout', 30000)}ms")
     print(f"  • Verify actions: {'Enabled' if user_preferences.get('verify_actions', True) else 'Disabled'}")
     print(f"  • Auto-scan pages: {'Enabled' if user_preferences.get('auto_scan', True) else 'Disabled'}")
+    print(f"\n⚡ New Features:")
+    print(f"  • Global hotkeys: {'Enabled' if user_preferences.get('enable_hotkeys', False) else 'Disabled'}")
+    if user_preferences.get('enable_hotkeys', False):
+        print(f"    - Ctrl+Shift+R: Toggle Recording")
+        print(f"    - Ctrl+Shift+P: Replay Last Session")
+    print(f"  • Clipboard auto-suggest: {'Enabled' if user_preferences.get('clipboard_auto_suggest', True) else 'Disabled'}")
+    print(f"  • Page context saved: {'Yes' if user_preferences.get('form_field_cache') else 'No'}")
     print("=" * 50)
+
 
 def save_session():
     """Save recorded actions to a file"""
@@ -1779,12 +3393,30 @@ def save_session():
     if not filename:
         filename = f"session_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
     
+    # Offer intelligent enhancements
+    enhance = input("\n🧠 Add intelligent error handling and logic? (y/n): ").strip().lower()
+    
+    actions_to_save = recorded_actions
+    if enhance == 'y':
+        actions_to_save = suggest_workflow_improvements(recorded_actions)
+    
     filepath = f"sessions/{filename}.json"
     
     try:
+        # Save with metadata
+        session_data = {
+            'name': filename,
+            'created': datetime.now().isoformat(),
+            'actions': actions_to_save,
+            'enhanced': enhance == 'y',
+            'action_count': len(actions_to_save)
+        }
+        
         with open(filepath, 'w') as f:
-            json.dump(recorded_actions, f, indent=2)
-        print(f"✓ Session saved to '{filepath}' ({len(recorded_actions)} actions)")
+            json.dump(session_data, f, indent=2)
+        print(f"✓ Session saved to '{filepath}' ({len(actions_to_save)} actions)")
+        if enhance == 'y':
+            print("  ✓ Enhanced with intelligent error handling")
     except Exception as e:
         print(f"✗ Error saving session: {e}")
 
@@ -1818,7 +3450,17 @@ def load_session(page):
         filepath = f"sessions/{sessions[idx]}"
         
         with open(filepath, 'r') as f:
-            actions = json.load(f)
+            session_data = json.load(f)
+        
+        # Handle both old format (list) and new format (dict with metadata)
+        if isinstance(session_data, dict) and 'actions' in session_data:
+            actions = session_data['actions']
+            enhanced = session_data.get('enhanced', False)
+            if enhanced:
+                print(f"✓ This session has intelligent error handling enabled")
+        else:
+            actions = session_data
+            enhanced = False
         
         print(f"\n🎬 Replaying session '{sessions[idx]}' ({len(actions)} actions)...")
         print("Press Ctrl+C to stop at any time\n")
@@ -1826,53 +3468,84 @@ def load_session(page):
         for i, action in enumerate(actions):
             print(f"[{i+1}/{len(actions)}] {action['type']}: {action.get('description', '')}")
             
-            try:
-                if action['type'] == 'navigate':
-                    page.goto(action['url'])
-                    time.sleep(1)
-                
-                elif action['type'] == 'click_button':
-                    # Re-scan to get fresh elements
-                    page_elements['buttons'] = page.locator('button, input[type="button"], input[type="submit"]').all()
-                    page_elements['buttons'][action['index']].click()
-                    time.sleep(0.5)
-                
-                elif action['type'] == 'click_link':
-                    page_elements['links'] = page.locator('a[href]').all()
-                    page_elements['links'][action['index']].click()
-                    time.sleep(0.5)
-                
-                elif action['type'] == 'fill_input':
-                    page_elements['inputs'] = page.locator('input[type="text"], input[type="email"], input[type="password"]').all()
-                    page_elements['inputs'][action['index']].fill(action['value'])
-                    time.sleep(0.3)
-                
-                elif action['type'] == 'type_input':
-                    page_elements['inputs'] = page.locator('input[type="text"], input[type="email"], input[type="password"]').all()
-                    elem = page_elements['inputs'][action['index']]
-                    elem.clear()
+            # Apply intelligent error handling if enhanced
+            max_retries = action.get('error_handling', {}).get('max_retries', 1) if enhanced else 1
+            retry_count = 0
+            success = False
+            
+            while retry_count < max_retries and not success:
+                try:
+                    if action['type'] == 'navigate':
+                        page.goto(action['url'])
+                        time.sleep(1)
+                        success = True
                     
-                    # Type with human-like behavior
-                    for char in action['value']:
-                        variation = random.uniform(-0.4, 0.4)
-                        delay = int(action.get('base_delay', 100) * (1 + variation))
-                        elem.type(char, delay=delay)
+                    elif action['type'] == 'click_button':
+                        # Re-scan to get fresh elements
+                        page_elements['buttons'] = page.locator('button, input[type="button"], input[type="submit"]').all()
+                        page_elements['buttons'][action['index']].click()
+                        time.sleep(0.5)
+                        success = True
+                    
+                    elif action['type'] == 'click_link':
+                        page_elements['links'] = page.locator('a[href]').all()
+                        page_elements['links'][action['index']].click()
+                        time.sleep(0.5)
+                        success = True
+                    
+                    elif action['type'] == 'fill_input':
+                        page_elements['inputs'] = page.locator('input[type="text"], input[type="email"], input[type="password"]').all()
+                        page_elements['inputs'][action['index']].fill(action['value'])
+                        time.sleep(0.3)
+                        success = True
+                    
+                    elif action['type'] == 'type_input':
+                        page_elements['inputs'] = page.locator('input[type="text"], input[type="email"], input[type="password"]').all()
+                        elem = page_elements['inputs'][action['index']]
+                        elem.clear()
+                        
+                        # Type with human-like behavior
+                        for char in action['value']:
+                            variation = random.uniform(-0.4, 0.4)
+                            delay = int(action.get('base_delay', 100) * (1 + variation))
+                            elem.type(char, delay=delay)
+                        success = True
+                    
+                    elif action['type'] == 'select_option':
+                        page_elements['selects'] = page.locator('select').all()
+                        page_elements['selects'][action['index']].select_option(action['value'])
+                        time.sleep(0.3)
+                        success = True
+                    
+                    elif action['type'] == 'check_checkbox':
+                        page_elements['checkboxes'] = page.locator('input[type="checkbox"]').all()
+                        page_elements['checkboxes'][action['index']].check()
+                        time.sleep(0.3)
+                        success = True
                 
-                elif action['type'] == 'select_option':
-                    page_elements['selects'] = page.locator('select').all()
-                    page_elements['selects'][action['index']].select_option(action['value'])
-                    time.sleep(0.3)
-                
-                elif action['type'] == 'check_checkbox':
-                    page_elements['checkboxes'] = page.locator('input[type="checkbox"]').all()
-                    page_elements['checkboxes'][action['index']].check()
-                    time.sleep(0.3)
-                
-            except Exception as e:
-                print(f"  ✗ Error: {e}")
-                retry = input("  Continue with next action? (y/n): ").strip().lower()
-                if retry != 'y':
-                    break
+                except Exception as e:
+                    retry_count += 1
+                    if retry_count < max_retries:
+                        print(f"  ⚠ Attempt {retry_count} failed: {e}")
+                        retry_delay = action.get('error_handling', {}).get('retry_delay', 1.0) if enhanced else 1.0
+                        time.sleep(retry_delay)
+                        print(f"  🔄 Retrying ({retry_count + 1}/{max_retries})...")
+                    else:
+                        print(f"  ✗ Error after {max_retries} attempts: {e}")
+                        
+                        on_error = action.get('error_handling', {}).get('on_error', 'continue') if enhanced else 'ask'
+                        
+                        if on_error == 'continue':
+                            print("  → Continuing to next action (as per error handling)")
+                            break
+                        elif on_error == 'stop':
+                            print("  → Stopping session (as per error handling)")
+                            return
+                        else:
+                            retry = input("  Continue with next action? (y/n): ").strip().lower()
+                            if retry != 'y':
+                                return
+                        break
         
         print("\n✓ Session replay completed!")
         
@@ -1896,12 +3569,14 @@ def toggle_recording():
 
 def show_menu():
     """Display the interactive menu"""
-    global is_recording
+    global is_recording, watch_and_learn_enabled
     
     print("\n" + "="*50)
     print("🌐 WEB AUTOMATION MENU")
     if is_recording:
         print(f"⏺️  RECORDING ({len(recorded_actions)} actions)")
+    if watch_and_learn_enabled:
+        print(f"👁️  WATCH & LEARN ({len(detected_patterns)} patterns detected)")
     print("="*50)
     print("1. Navigate to website")
     print("2. Get page information")
@@ -1913,8 +3588,18 @@ def show_menu():
     print("8. ⚙️  Save preferences")
     print("9. 📂 Load preferences")
     print("10. 📋 View current preferences")
-    print("11. Close browser and exit")
+    print("11. 🔖 Save page context (for resume)")
+    print("12. 📚 Use session template")
+    print("13. 📄 List available templates")
+    print("14. ⌨️  Toggle global hotkeys")
+    print("15. 👁️  Toggle Watch & Learn")
+    print("16. 📊 View detected patterns")
+    print("17. 🧠 Smart Workflow Builder")
+    print("18. 🔢 Simple rating click (1/2/3)")
+    print("19. 🤖 Auto-rate with Gemini AI")
+    print("20. Close browser and exit")
     print("="*50)
+
 
 def main():
     """Main automation script"""
@@ -2086,6 +3771,12 @@ def main():
                     page.goto(last_url)
                     print(f"✓ Loaded: {page.title()}")
                     
+                    # Restore page context (scroll position and form fields)
+                    if user_preferences.get('form_field_cache') or user_preferences.get('last_scroll_position'):
+                        restore_context = input("🔄 Restore saved context (scroll position & form fields)? (y/n): ").strip().lower()
+                        if restore_context == 'y':
+                            restore_page_context(page)
+                    
                     # Auto-scan if enabled
                     if user_preferences.get('auto_scan', True):
                         print("\n🔍 Auto-scanning page elements...")
@@ -2094,10 +3785,31 @@ def main():
                 except Exception as e:
                     print(f"⚠ Could not load last URL: {e}")
         
+        # Setup hotkeys if enabled
+        hotkeys_enabled = False
+        if user_preferences.get('enable_hotkeys', False) and HOTKEYS_AVAILABLE:
+            setup_hotkeys()
+            hotkeys_enabled = True
+        
         # Interactive menu loop
         while True:
+            # Check for detected patterns and offer automation
+            check_for_pattern_prompts()
+            
+            # Process hotkey actions
+            if hotkeys_enabled:
+                hotkey_actions = process_hotkey_actions()
+                for action in hotkey_actions:
+                    if action == 'toggle_record':
+                        toggle_recording()
+                    elif action == 'replay_last':
+                        try:
+                            load_session(page)
+                        except Exception as e:
+                            print(f"✗ Error: {e}")
+            
             show_menu()
-            choice = input("\nEnter your choice (1-11): ").strip()
+            choice = input("\nEnter your choice (1-20): ").strip()
             
             if choice == '1':
                 url = input("\n🔗 Enter website URL (e.g., google.com): ").strip()
@@ -2107,6 +3819,9 @@ def main():
                     print(f"Navigating to {url}...")
                     page.goto(url)
                     print(f"✓ Loaded: {page.title()}")
+                    
+                    # Track for Watch & Learn
+                    track_action('navigate', {'url': url})
                     
                     # Save last URL
                     user_preferences['last_url'] = url
@@ -2168,13 +3883,110 @@ def main():
                 view_current_preferences()
             
             elif choice == '11':
+                # Save page context
+                try:
+                    context_data = save_page_context(page)
+                    if context_data:
+                        print(f"✓ Page context saved!")
+                        print(f"  • URL: {context_data['url']}")
+                        print(f"  • Scroll position: {context_data['scroll_position']}px")
+                        print(f"  • Form fields cached: {len(context_data['form_fields'])}")
+                except Exception as e:
+                    print(f"✗ Error: {e}")
+            
+            elif choice == '12':
+                # Use session template
+                try:
+                    list_templates()
+                    template_choice = input("\nEnter template name or number (or 'c' to cancel): ").strip()
+                    
+                    if template_choice.lower() == 'c':
+                        print("Cancelled.")
+                        continue
+                    
+                    # Check if it's a number
+                    templates = get_session_templates()
+                    template_name = None
+                    
+                    try:
+                        idx = int(template_choice)
+                        template_name = list(templates.keys())[idx]
+                    except (ValueError, IndexError):
+                        # It's a name
+                        if template_choice in templates:
+                            template_name = template_choice
+                    
+                    if template_name:
+                        apply_template(page, template_name)
+                    else:
+                        print(f"✗ Invalid template: {template_choice}")
+                except Exception as e:
+                    print(f"✗ Error: {e}")
+            
+            elif choice == '13':
+                # List templates
+                list_templates()
+            
+            elif choice == '14':
+                # Toggle global hotkeys
+                if not HOTKEYS_AVAILABLE:
+                    print("⚠ pynput not installed. Install with: pip install pynput")
+                else:
+                    if hotkeys_enabled:
+                        stop_hotkeys()
+                        hotkeys_enabled = False
+                    else:
+                        setup_hotkeys()
+                        hotkeys_enabled = True
+            
+            elif choice == '15':
+                # Toggle Watch & Learn
+                toggle_watch_and_learn()
+            
+            elif choice == '16':
+                # View detected patterns
+                view_detected_patterns()
+            
+            elif choice == '17':
+                # Smart Workflow Builder
+                workflow_config = smart_workflow_builder()
+                print(f"\n✓ Workflow configuration: {workflow_config}")
+                print("💡 Now record your actions and they'll be saved with this configuration")
+            
+            elif choice == '18':
+                # Simple rating click
+                try:
+                    simple_rating_click(page)
+                except Exception as e:
+                    print(f"✗ Error: {e}")
+            
+            elif choice == '19':
+                # Auto-rate with Gemini
+                try:
+                    auto_rate_with_gemini(page)
+                except Exception as e:
+                    print(f"✗ Error: {e}")
+            
+            elif choice == '20':
+                # Close browser and save context
+                try:
+                    # Auto-save page context before closing
+                    if page.url != 'about:blank':
+                        save_context = input("\n💾 Save current page context? (y/n): ").strip().lower()
+                        if save_context == 'y':
+                            save_page_context(page)
+                except:
+                    pass
+                
                 print("\n👋 Closing browser...")
+                if hotkeys_enabled:
+                    stop_hotkeys()
                 context.close()
                 print("✓ Browser closed. Goodbye!")
                 break
             
             else:
-                print("⚠ Invalid choice. Please enter 1-11.")
+                print("⚠ Invalid choice. Please enter 1-20.")
 
 if __name__ == "__main__":
     main()
