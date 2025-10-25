@@ -3628,8 +3628,13 @@ def main():
                         profile_path,
                         headless=False,
                         channel="msedge",
+                        no_viewport=True,
                         args=[
-                            '--disable-blink-features=AutomationControlled'
+                            '--disable-blink-features=AutomationControlled',
+                            '--start-maximized',
+                            '--force-device-scale-factor=1',
+                            '--high-dpi-support=1',
+                            '--disable-gpu-driver-bug-workarounds'
                         ]
                     )
                     page = context.pages[0] if context.pages else context.new_page()
@@ -3664,10 +3669,14 @@ def main():
                         headless=False,
                         channel="msedge",
                         args=[
-                            '--disable-blink-features=AutomationControlled'
+                            '--disable-blink-features=AutomationControlled',
+                            '--start-maximized',
+                            '--force-device-scale-factor=1',
+                            '--high-dpi-support=1',
+                            '--disable-gpu-driver-bug-workarounds'
                         ]
                     )
-                    context = browser.new_context()
+                    context = browser.new_context(no_viewport=True)
                     page = context.new_page()
                     
                     # Remove automation detection
@@ -3694,11 +3703,15 @@ def main():
                     headless=False,
                     channel="msedge",
                     args=[
-                        '--disable-blink-features=AutomationControlled'
+                        '--disable-blink-features=AutomationControlled',
+                        '--start-maximized',
+                        '--force-device-scale-factor=1',
+                        '--high-dpi-support=1',
+                        '--disable-gpu-driver-bug-workarounds'
                     ],
                     ignore_default_args=['--enable-automation']
                 )
-                context = browser.new_context()
+                context = browser.new_context(no_viewport=True)
                 page = context.new_page()
                 
                 # Remove automation detection
@@ -3724,10 +3737,14 @@ def main():
                 headless=False,
                 channel="msedge",
                 args=[
-                    '--disable-blink-features=AutomationControlled'
+                    '--disable-blink-features=AutomationControlled',
+                    '--start-maximized',
+                    '--force-device-scale-factor=1',
+                    '--high-dpi-support=1',
+                    '--disable-gpu-driver-bug-workarounds'
                 ]
             )
-            context = browser.new_context()
+            context = browser.new_context(no_viewport=True)
             page = context.new_page()
             
             # Remove automation detection
