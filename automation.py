@@ -67,7 +67,10 @@ user_preferences = {
     'hotkey_replay': 'ctrl+shift+p',
     'clipboard_auto_suggest': True,
     'gemini_api_key': '',  # Set via preferences
-    'gemini_model': 'gemini-2.0-flash-exp'  # Free and fast model
+    'gemini_model': 'gemini-2.0-flash-exp',  # Free and fast model
+    'gemini_custom_instructions': '',  # Saved custom rating instructions
+    'gemini_saved_instructions': [],  # List of previously used instructions
+    'gemini_last_categories': []  # Last used rating categories with scales
 }
 
 def get_clipboard_text():
@@ -810,48 +813,200 @@ def setup_gemini_api():
         print(f"✗ Error configuring Gemini API: {e}")
         return False
 
-def extract_response_text(page):
-    """Extract the model response text from the rating page"""
+def auto_detect_rating_categories(page):
+    """Auto-detect rating categories from the page"""
+    print("\n🔍 Auto-detecting rating categories...")
+    
+    detected_categories = []
+    
     try:
-        # Try to find the response text - adjust selector based on actual page structure
-        response_texts = []
-        
-        # Strategy 1: Look for common response containers
-        selectors = [
-            'div[class*="response"]',
-            'div[class*="model-response"]',
-            'div[class*="output"]',
-            '[role="article"]',
-            'p',
-            'div.text'
+        # Common category keywords to look for
+        category_keywords = [
+            'localization', 'instruction following', 'truthfulness', 
+            'helpfulness', 'harmlessness', 'honesty', 'accuracy',
+            'relevance', 'completeness', 'clarity', 'coherence',
+            'tone', 'style', 'grammar', 'structure', 'writing style',
+            'factual correctness', 'safety', 'appropriateness'
         ]
         
-        for selector in selectors:
+        # Try to find category headings/labels
+        for keyword in category_keywords:
             try:
-                elements = page.locator(selector).all()
-                for elem in elements[:5]:  # Check first 5
-                    text = elem.inner_text().strip()
-                    if len(text) > 50:  # Likely a response if longer than 50 chars
-                        response_texts.append(text)
+                # Look for text containing the keyword (case-insensitive)
+                elements = page.locator(f'text=/{keyword}/i').all()
+                
+                for elem in elements[:1]:  # Take first match
+                    try:
+                        text = elem.inner_text().strip()
+                        # Clean up the text (remove emojis, extra spaces, etc.)
+                        clean_text = ' '.join(text.split())
+                        
+                        # Check if it looks like a category name (not too long)
+                        if 5 < len(clean_text) < 60 and clean_text not in [cat['name'] for cat in detected_categories]:
+                            detected_categories.append({
+                                'name': clean_text,
+                                'scale': '1-3'  # Default scale
+                            })
+                    except:
+                        continue
             except:
                 continue
         
-        if response_texts:
-            # Return the longest text (likely the main response)
-            return max(response_texts, key=len)
+        # Also try to find common heading patterns
+        try:
+            headings = page.locator('h1, h2, h3, h4, h5, h6, label, legend, [role="heading"]').all()
+            for heading in headings[:20]:  # Check first 20 headings
+                try:
+                    text = heading.inner_text().strip()
+                    clean_text = ' '.join(text.split())
+                    
+                    # Check if it looks like a category (contains key phrases)
+                    if any(word in clean_text.lower() for word in ['rate', 'evaluate', 'assess', 'quality']) and \
+                       5 < len(clean_text) < 60 and \
+                       clean_text not in [cat['name'] for cat in detected_categories]:
+                        detected_categories.append({
+                            'name': clean_text,
+                            'scale': '1-3'
+                        })
+                except:
+                    continue
+        except:
+            pass
         
-        # Fallback: get all visible text
-        body_text = page.locator('body').inner_text()
-        return body_text[:5000]  # Limit to first 5000 chars
+        return detected_categories[:10]  # Return max 10 categories
+        
+    except Exception as e:
+        print(f"⚠ Error auto-detecting: {e}")
+        return []
+
+def extract_response_text(page):
+    """Extract the model response text from the rating page"""
+    print("\n📝 Text Extraction Method:")
+    print("1. Auto-detect (try to find response text automatically)")
+    print("2. Manual selection (click to select text area)")
+    print("3. Copy from clipboard (you copy the text, I'll use it)")
+    print("4. Specify CSS selector")
+    
+    method = input("\nChoice (1/2/3/4): ").strip()
+    
+    try:
+        if method == '2':
+            # Manual selection
+            print("\n👆 Click on the element containing the response text...")
+            print("Waiting for you to click...")
+            
+            # Wait for user to click an element
+            clicked_element = page.wait_for_selector('*:hover', timeout=30000)
+            if clicked_element:
+                text = clicked_element.inner_text().strip()
+                if len(text) > 20:
+                    print(f"✓ Extracted {len(text)} characters from clicked element")
+                    return text
+                else:
+                    print("⚠ Element has very little text, trying auto-detect...")
+                    method = '1'
+        
+        elif method == '3':
+            # Use clipboard
+            clipboard_text = get_clipboard_text()
+            if clipboard_text and len(clipboard_text) > 20:
+                print(f"✓ Using clipboard text ({len(clipboard_text)} characters)")
+                return clipboard_text
+            else:
+                print("⚠ No valid text in clipboard, trying auto-detect...")
+                method = '1'
+        
+        elif method == '4':
+            # Custom CSS selector
+            selector = input("Enter CSS selector (e.g., 'div.response-text'): ").strip()
+            try:
+                element = page.locator(selector).first
+                text = element.inner_text().strip()
+                if text:
+                    print(f"✓ Extracted {len(text)} characters using selector")
+                    return text
+                else:
+                    print("⚠ Selector found no text, trying auto-detect...")
+                    method = '1'
+            except:
+                print("⚠ Selector failed, trying auto-detect...")
+                method = '1'
+        
+        # Method 1 or fallback: Auto-detect
+        if method == '1' or True:
+            print("\n🔍 Auto-detecting response text...")
+            response_texts = []
+            
+            # Strategy 1: Look for common response containers
+            selectors = [
+                '[class*="response"]',
+                '[class*="model-output"]',
+                '[class*="answer"]',
+                '[class*="content"]',
+                '[role="article"]',
+                'div[class*="text"]',
+                'pre',
+                'code',
+                'p'
+            ]
+            
+            for selector in selectors:
+                try:
+                    elements = page.locator(selector).all()
+                    for elem in elements[:10]:  # Check first 10
+                        try:
+                            text = elem.inner_text().strip()
+                            if len(text) > 100:  # Likely a response if longer than 100 chars
+                                response_texts.append(text)
+                        except:
+                            continue
+                except:
+                    continue
+            
+            if response_texts:
+                # Find the longest unique text
+                unique_texts = list(set(response_texts))
+                longest_text = max(unique_texts, key=len)
+                
+                # Show preview and ask for confirmation
+                print(f"\n📄 Found text ({len(longest_text)} characters):")
+                print("="*60)
+                print(longest_text[:300] + "..." if len(longest_text) > 300 else longest_text)
+                print("="*60)
+                
+                confirm = input("\nUse this text? (y/n): ").strip().lower()
+                if confirm == 'y':
+                    return longest_text
+                else:
+                    print("Let's try again...")
+                    return extract_response_text(page)  # Retry with different method
+            
+            # Fallback: get all visible text
+            print("⚠ Could not auto-detect, extracting all page text...")
+            body_text = page.locator('body').inner_text()
+            
+            if len(body_text) > 100:
+                print(f"\n📄 Extracted all page text ({len(body_text)} characters):")
+                print("="*60)
+                print(body_text[:300] + "..." if len(body_text) > 300 else body_text)
+                print("="*60)
+                
+                confirm = input("\nUse this text? (y/n): ").strip().lower()
+                if confirm == 'y':
+                    return body_text[:10000]  # Limit to 10k chars
+            
+            print("✗ Could not extract text")
+            return None
         
     except Exception as e:
         print(f"⚠ Error extracting response text: {e}")
         return None
 
-def get_gemini_rating(response_text, category="overall", scale_type="1-3"):
+def get_gemini_rating(response_text, category="overall", scale_type="1-3", custom_instructions=""):
     """
     Send response to Gemini for rating evaluation
     Supports different scales: 1-3, 1-5, -2 to +2, etc.
+    Accepts custom instructions for specific rating criteria
     """
     if not GEMINI_AVAILABLE:
         print("⚠ Gemini API not available")
@@ -881,30 +1036,47 @@ def get_gemini_rating(response_text, category="overall", scale_type="1-3"):
         
         config = scale_configs.get(scale_type, scale_configs["1-3"])
         
+        # Build custom instructions section
+        custom_section = ""
+        if custom_instructions:
+            custom_section = f"""
+CUSTOM RATING INSTRUCTIONS:
+{custom_instructions}
+
+Follow these custom instructions carefully when evaluating the response.
+"""
+        
         # Create rating prompt
         prompt = f"""You are evaluating a model response for quality. 
 
 Category: {category}
 
 Response to evaluate:
+\"\"\"
 {response_text}
+\"\"\"
 
 Rate this response on a scale of {config['scale']}:
 {config['options']}
-
-Consider:
+{custom_section}
+Standard Evaluation Criteria:
 - Localization: Is the language appropriate and natural for the intended audience?
 - Instruction Following: Does it follow all requirements in the prompt?
 - Truthfulness: Is the information accurate and reliable?
 - Overall Quality: Grammar, coherence, helpfulness
+- Completeness: Does it fully address the question/task?
+- Tone & Style: Is the tone appropriate for the context?
 
-Respond with ONLY the number/value and a brief reason.
+Respond with ONLY the number/value and a brief reason (one sentence).
 Format: NUMBER: Reason
 
 Example: 3: Response is well-written, accurate, and follows all instructions perfectly."""
 
         response = model.generate_content(prompt)
         rating_text = response.text.strip()
+        
+        # Show Gemini's reasoning
+        print(f"  💭 Gemini's reasoning: {rating_text}")
         
         # Extract number from response using pattern
         import re
@@ -937,7 +1109,6 @@ def auto_rate_with_gemini(page):
         return
     
     # Extract response text
-    print("📝 Extracting response text...")
     response_text = extract_response_text(page)
     
     if not response_text:
@@ -945,8 +1116,85 @@ def auto_rate_with_gemini(page):
         print("💡 Tip: Make sure you're on the rating page with the model response visible")
         return
     
-    print(f"✓ Extracted {len(response_text)} characters")
-    print(f"Preview: {response_text[:100]}...")
+    print(f"\n✓ Extracted {len(response_text)} characters")
+    
+    # Ask for custom rating instructions
+    print("\n📋 Custom Rating Instructions (Optional)")
+    print("="*60)
+    
+    # Show saved instructions if any
+    saved_instructions = user_preferences.get('gemini_saved_instructions', [])
+    last_instructions = user_preferences.get('gemini_custom_instructions', '')
+    
+    if last_instructions or saved_instructions:
+        print("Previously used instructions:")
+        if last_instructions:
+            print(f"  Last used: {last_instructions[:80]}...")
+        
+        if saved_instructions:
+            print("\nSaved instruction templates:")
+            for i, instr in enumerate(saved_instructions[:5], 1):  # Show max 5
+                print(f"  {i}. {instr[:80]}...")
+        
+        print("\nOptions:")
+        print("  • Press Enter to use last instructions")
+        if saved_instructions:
+            print("  • Enter a number (1-{}) to use saved template".format(len(saved_instructions[:5])))
+        print("  • Type 'new' to enter new instructions")
+        print("  • Type 'none' to skip custom instructions")
+        
+        choice = input("\nYour choice: ").strip().lower()
+        
+        if choice == '':
+            custom_instructions = last_instructions
+            print(f"✓ Using last instructions: {custom_instructions[:100]}...")
+        elif choice == 'none':
+            custom_instructions = ''
+            print("✓ Using default evaluation criteria")
+        elif choice == 'new':
+            custom_instructions = None  # Will prompt below
+        elif choice.isdigit():
+            idx = int(choice) - 1
+            if 0 <= idx < len(saved_instructions):
+                custom_instructions = saved_instructions[idx]
+                print(f"✓ Using saved template: {custom_instructions[:100]}...")
+            else:
+                custom_instructions = None
+        else:
+            custom_instructions = None
+    else:
+        custom_instructions = None
+    
+    # Prompt for new instructions if needed
+    if custom_instructions is None:
+        print("\nYou can provide specific criteria for rating.")
+        print("Examples:")
+        print("  • 'Focus on whether the response is appropriate for a 5-year-old'")
+        print("  • 'Check if medical information is accurate and cites sources'")
+        print("  • 'Evaluate if the translation sounds natural to native speakers'")
+        print("  • 'Rate based on whether it addresses all 5 requirements listed'")
+        print("\nLeave blank to use default criteria.")
+        print("="*60)
+        
+        custom_instructions = input("\nEnter custom instructions (or Enter to skip): ").strip()
+    
+    # Save instructions if provided
+    if custom_instructions:
+        print(f"✓ Using custom instructions: {custom_instructions[:100]}...")
+        
+        # Save as last used
+        user_preferences['gemini_custom_instructions'] = custom_instructions
+        
+        # Ask to save as template
+        save_template = input("\n💾 Save these instructions as a reusable template? (y/n): ").strip().lower()
+        if save_template == 'y':
+            saved_list = user_preferences.get('gemini_saved_instructions', [])
+            if custom_instructions not in saved_list:
+                saved_list.append(custom_instructions)
+                user_preferences['gemini_saved_instructions'] = saved_list
+                print(f"✓ Saved as template #{len(saved_list)}")
+    else:
+        print("✓ Using default evaluation criteria")
     
     # Ask for rating configuration
     print("\n📊 Rating Configuration:")
@@ -957,30 +1205,121 @@ def auto_rate_with_gemini(page):
     
     if mode == '2':
         # Batch mode
-        print("\n� Enter categories to rate (one per line, empty line to finish):")
-        print("Examples: 'Localization', 'Instruction Following', 'Truthfulness', etc.")
-        
         categories = []
-        while True:
-            cat = input(f"Category {len(categories) + 1} (or Enter to finish): ").strip()
-            if not cat:
-                break
+        
+        # Check if we have saved categories
+        last_categories = user_preferences.get('gemini_last_categories', [])
+        
+        if last_categories:
+            print("\n💾 Previously used categories:")
+            for i, cat in enumerate(last_categories, 1):
+                print(f"  {i}. {cat['name']} (scale: {cat['scale']})")
             
-            # Ask for scale type
-            print(f"\nScale for '{cat}':")
-            print("1. 1-3 scale (Major/Minor/No Issues)")
-            print("2. 1-5 scale (Highly unsatisfying to Highly satisfying)")
-            print("3. -2 to +2 scale (Too Short/Just Right/Too Verbose)")
-            scale_choice = input("Choice (1/2/3): ").strip()
+            print("\nOptions:")
+            print("  1. Use saved categories")
+            print("  2. Auto-detect from page")
+            print("  3. Enter manually")
             
-            scale_map = {"1": "1-3", "2": "1-5", "3": "-2-2"}
-            scale_type = scale_map.get(scale_choice, "1-3")
+            cat_choice = input("\nYour choice (1/2/3): ").strip()
             
-            categories.append({"name": cat, "scale": scale_type})
+            if cat_choice == '1':
+                categories = last_categories.copy()
+                print(f"✓ Using {len(categories)} saved categories")
+            elif cat_choice == '2':
+                detected = auto_detect_rating_categories(page)
+                if detected:
+                    print(f"\n✓ Found {len(detected)} categories:")
+                    for i, cat in enumerate(detected, 1):
+                        print(f"  {i}. {cat['name']}")
+                    
+                    use_detected = input("\nUse these categories? (y/n): ").strip().lower()
+                    if use_detected == 'y':
+                        # Ask for scales
+                        for cat in detected:
+                            print(f"\nScale for '{cat['name']}':")
+                            print("1. 1-3 scale (Major/Minor/No Issues)")
+                            print("2. 1-5 scale (Highly unsatisfying to Highly satisfying)")
+                            print("3. -2 to +2 scale (Too Short/Just Right/Too Verbose)")
+                            scale_choice = input("Choice (1/2/3, or Enter for 1-3): ").strip()
+                            
+                            scale_map = {"1": "1-3", "2": "1-5", "3": "-2-2"}
+                            cat['scale'] = scale_map.get(scale_choice, "1-3")
+                        
+                        categories = detected
+                    else:
+                        cat_choice = '3'  # Fall through to manual
+                else:
+                    print("⚠ No categories detected, please enter manually")
+                    cat_choice = '3'
+            
+            if cat_choice == '3' or not categories:
+                # Manual entry
+                print("\n📝 Enter categories to rate (one per line, empty line to finish):")
+                print("Examples: 'Localization', 'Instruction Following', 'Truthfulness', etc.")
+        else:
+            # No saved categories - offer auto-detect or manual
+            print("\n📝 Category Selection:")
+            print("1. Auto-detect from page")
+            print("2. Enter manually")
+            
+            cat_choice = input("\nYour choice (1/2): ").strip()
+            
+            if cat_choice == '1':
+                detected = auto_detect_rating_categories(page)
+                if detected:
+                    print(f"\n✓ Found {len(detected)} categories:")
+                    for i, cat in enumerate(detected, 1):
+                        print(f"  {i}. {cat['name']}")
+                    
+                    use_detected = input("\nUse these categories? (y/n): ").strip().lower()
+                    if use_detected == 'y':
+                        # Ask for scales
+                        for cat in detected:
+                            print(f"\nScale for '{cat['name']}':")
+                            print("1. 1-3 scale (Major/Minor/No Issues)")
+                            print("2. 1-5 scale (Highly unsatisfying to Highly satisfying)")
+                            print("3. -2 to +2 scale (Too Short/Just Right/Too Verbose)")
+                            scale_choice = input("Choice (1/2/3, or Enter for 1-3): ").strip()
+                            
+                            scale_map = {"1": "1-3", "2": "1-5", "3": "-2-2"}
+                            cat['scale'] = scale_map.get(scale_choice, "1-3")
+                        
+                        categories = detected
+                    else:
+                        cat_choice = '2'
+                else:
+                    print("⚠ No categories detected, please enter manually")
+                    cat_choice = '2'
+        
+        # Manual entry if needed
+        if not categories:
+            print("\n📝 Enter categories to rate (one per line, empty line to finish):")
+            print("Examples: 'Localization', 'Instruction Following', 'Truthfulness', etc.")
+            
+            while True:
+                cat = input(f"Category {len(categories) + 1} (or Enter to finish): ").strip()
+                if not cat:
+                    break
+                
+                # Ask for scale type
+                print(f"\nScale for '{cat}':")
+                print("1. 1-3 scale (Major/Minor/No Issues)")
+                print("2. 1-5 scale (Highly unsatisfying to Highly satisfying)")
+                print("3. -2 to +2 scale (Too Short/Just Right/Too Verbose)")
+                scale_choice = input("Choice (1/2/3): ").strip()
+                
+                scale_map = {"1": "1-3", "2": "1-5", "3": "-2-2"}
+                scale_type = scale_map.get(scale_choice, "1-3")
+                
+                categories.append({"name": cat, "scale": scale_type})
         
         if not categories:
             print("✗ No categories entered")
             return
+        
+        # Save categories for next time
+        user_preferences['gemini_last_categories'] = categories
+        print(f"💾 Saved {len(categories)} categories for next time")
         
         # Rate all categories
         all_ratings = []
@@ -991,7 +1330,7 @@ def auto_rate_with_gemini(page):
             scale_type = cat_info["scale"]
             
             print(f"\n[{i}/{len(categories)}] Rating '{cat_name}' (scale: {scale_type})...")
-            rating = get_gemini_rating(response_text, cat_name, scale_type)
+            rating = get_gemini_rating(response_text, cat_name, scale_type, custom_instructions)
             
             if rating is not None:
                 print(f"  ✓ Gemini rated: {rating}")
@@ -1007,54 +1346,163 @@ def auto_rate_with_gemini(page):
         for i, (cat_info, rating) in enumerate(zip(categories, all_ratings), 1):
             print(f"  {i}. {cat_info['name']}: {rating}")
         
+        # Ask about multiple responses
+        print(f"\n📝 Multiple Responses:")
+        print("Do you have multiple responses to rate (e.g., Response 1 and Response 2)?")
+        multiple_responses = input("Enter number of responses (1 or 2+, default: 1): ").strip()
+        
+        num_responses = 1
+        if multiple_responses.isdigit() and int(multiple_responses) > 1:
+            num_responses = int(multiple_responses)
+            print(f"✓ Will rate {num_responses} responses with the same ratings: {' '.join(all_ratings)}")
+        
         # Ask to auto-click all
-        print(f"\n🖱️  Click all {len(all_ratings)} rating buttons automatically?")
+        total_ratings = len(all_ratings) * num_responses
+        print(f"\n🖱️  Click all {total_ratings} rating buttons automatically?")
+        if num_responses > 1:
+            print(f"({len(all_ratings)} ratings × {num_responses} responses)")
         print(f"Will click in this order: {' '.join(all_ratings)}")
         auto_click = input("Proceed? (y/n): ").strip().lower()
         
         if auto_click == 'y':
-            clicked_count = 0
+            total_clicked = 0
+            total_failed = 0
+            
+            # Process each response
+            for response_num in range(1, num_responses + 1):
+                if num_responses > 1:
+                    print(f"\n{'='*60}")
+                    print(f"📝 RESPONSE {response_num} - {len(all_ratings)} ratings")
+                    print(f"{'='*60}")
+                    
+                    # Scroll to find the response section
+                    if response_num > 1:
+                        print(f"\n🔍 Looking for 'Response {response_num}' section...")
+                        try:
+                            # Try to find and scroll to Response N heading
+                            response_heading = page.locator(f'text=/Response\\s*{response_num}/i').first
+                            if response_heading.count() > 0:
+                                response_heading.scroll_into_view_if_needed()
+                                time.sleep(0.5)
+                                print(f"✓ Found and scrolled to Response {response_num}")
+                            else:
+                                print(f"⚠ Could not find 'Response {response_num}' heading, scrolling down...")
+                                page.evaluate(f"window.scrollBy(0, {800 * (response_num - 1)})")
+                                time.sleep(0.5)
+                        except:
+                            print(f"⚠ Scrolling down for Response {response_num}...")
+                            page.evaluate(f"window.scrollBy(0, {800 * (response_num - 1)})")
+                            time.sleep(0.5)
+                else:
+                    # Single response - scroll to top
+                    print("\n📜 Scrolling to top of page...")
+                    try:
+                        page.evaluate("window.scrollTo(0, 0)")
+                        time.sleep(0.5)
+                    except:
+                        pass
+                
+                clicked_count = 0
+                clicked_indices = {}  # Track which index of each rating value we've clicked
+            
             for i, rating in enumerate(all_ratings, 1):
                 try:
-                    # Try multiple click methods
+                    # Get the index for this rating value
+                    current_index = clicked_indices.get(rating, 0)
+                    
                     success = False
                     
-                    # Method 1: Exact button match
+                    # Get all possible buttons with this rating value
+                    all_candidates = []
+                    
+                    # Method 1: Find all buttons with exact match
                     try:
-                        button = page.get_by_role("button", name=rating, exact=True).first
-                        if button.count() > 0:
-                            button.click()
-                            success = True
+                        buttons = page.get_by_role("button", name=rating, exact=True).all()
+                        all_candidates.extend(buttons)
                     except:
                         pass
                     
-                    # Method 2: Text match
-                    if not success:
-                        try:
-                            page.get_by_text(rating, exact=True).first.click()
-                            success = True
-                        except:
-                            pass
+                    # Method 2: Find all text elements
+                    try:
+                        text_elements = page.get_by_text(rating, exact=True).all()
+                        all_candidates.extend(text_elements)
+                    except:
+                        pass
                     
-                    # Method 3: Button locator
-                    if not success:
-                        try:
-                            page.locator(f'button:has-text("{rating}")').first.click()
-                            success = True
-                        except:
-                            pass
+                    # Method 3: Find all button locators
+                    try:
+                        button_locators = page.locator(f'button:has-text("{rating}")').all()
+                        all_candidates.extend(button_locators)
+                    except:
+                        pass
                     
-                    if success:
-                        print(f"  [{i}/{len(all_ratings)}] ✓ Clicked rating {rating}")
-                        clicked_count += 1
-                        time.sleep(0.3)
-                    else:
+                    # Remove duplicates and sort by position
+                    unique_candidates = []
+                    seen_boxes = set()
+                    
+                    for candidate in all_candidates:
+                        try:
+                            if candidate.is_visible():
+                                box = candidate.bounding_box()
+                                if box:
+                                    box_id = f"{int(box['x'])},{int(box['y'])},{int(box['width'])},{int(box['height'])}"
+                                    if box_id not in seen_boxes:
+                                        seen_boxes.add(box_id)
+                                        unique_candidates.append((candidate, box))
+                        except:
+                            continue
+                    
+                    # Sort by Y position (top to bottom)
+                    unique_candidates.sort(key=lambda x: x[1]['y'])
+                    
+                    # Try to click the button at the current index
+                    if current_index < len(unique_candidates):
+                        try:
+                            candidate, box = unique_candidates[current_index]
+                            
+                            # Scroll into view
+                            candidate.scroll_into_view_if_needed()
+                            time.sleep(0.3)
+                            
+                            # Click it
+                            candidate.click(timeout=2000)
+                            clicked_indices[rating] = current_index + 1
+                            success = True
+                            print(f"  [{i}/{len(all_ratings)}] ✓ Clicked rating {rating} (#{current_index + 1} at {int(box['y'])}px)")
+                            clicked_count += 1
+                            time.sleep(0.5)
+                        except Exception as e:
+                            print(f"  [{i}/{len(all_ratings)}] ⚠ Click failed: {e}")
+                    
+                    if not success:
                         print(f"  [{i}/{len(all_ratings)}] ✗ Could not click rating {rating}")
+                        print(f"     (Found {len(unique_candidates)} buttons, needed #{current_index + 1})")
                         
                 except Exception as e:
                     print(f"  [{i}/{len(all_ratings)}] ✗ Error: {e}")
+                
+                # Summary for this response
+                failed_count = len(all_ratings) - clicked_count
+                if num_responses > 1:
+                    print(f"\n{'-'*60}")
+                    print(f"Response {response_num} Summary:")
+                    print(f"  ✓ Successfully clicked: {clicked_count}/{len(all_ratings)}")
+                    if failed_count > 0:
+                        print(f"  ✗ Failed: {failed_count}/{len(all_ratings)}")
+                    print(f"{'-'*60}")
+                
+                total_clicked += clicked_count
+                total_failed += failed_count
             
-            print(f"\n✓ Clicked {clicked_count}/{len(all_ratings)} ratings successfully!")
+            # Final summary
+            print("\n" + "="*60)
+            print(f"📊 Final Rating Summary:")
+            print(f"  ✓ Total clicked: {total_clicked}/{total_ratings}")
+            if total_failed > 0:
+                print(f"  ✗ Total failed: {total_failed}/{total_ratings}")
+            if num_responses > 1:
+                print(f"  📝 Responses processed: {num_responses}")
+            print("="*60)
     
     else:
         # Single category mode (original behavior)
@@ -1073,7 +1521,7 @@ def auto_rate_with_gemini(page):
         scale_type = scale_map.get(scale_choice, "1-3")
         
         print(f"\n⏳ Getting Gemini rating for '{category}'...")
-        rating = get_gemini_rating(response_text, category, scale_type)
+        rating = get_gemini_rating(response_text, category, scale_type, custom_instructions)
         
         if rating is not None:
             print(f"✓ Gemini rated: {rating}")
@@ -1117,105 +1565,232 @@ def simple_rating_click(page):
     print("  • For 1-5 scale: Enter '4 3 5' to rate three categories")
     print("  • For -2 to +2 scale: Enter '1 0 -1' to rate three categories")
     print("  • Mixed scales: Just enter the numbers in order")
-    print("\n💡 Tip: Enter ratings in the order they appear on the page")
+    print("\n💡 Tip: Enter ratings in the order they appear on the page (top to bottom)")
+    print("\n🔄 Multiple Responses:")
+    print("  • If you have Response 1 and Response 2, enter ratings separated by '|'")
+    print("  • Example: '3 2 3 | 3 2 3' = Response 1 gets [3,2,3], Response 2 gets [3,2,3]")
     print("="*60)
     
-    ratings_input = input("\nEnter all ratings separated by spaces (e.g., '2 3 1') or 'c' to cancel: ").strip()
+    ratings_input = input("\nEnter all ratings separated by spaces (use | for multiple responses) or 'c' to cancel: ").strip()
     
     if ratings_input.lower() == 'c':
         print("Cancelled.")
         return
     
-    # Parse ratings - split by spaces and handle negative numbers
-    ratings = ratings_input.split()
+    # Check if there are multiple response sections (separated by |)
+    if '|' in ratings_input:
+        response_groups = [group.strip().split() for group in ratings_input.split('|')]
+        print(f"\n📊 Detected {len(response_groups)} response sections:")
+        for i, group in enumerate(response_groups, 1):
+            print(f"  Response {i}: {len(group)} ratings - {', '.join(group)}")
+    else:
+        # Single response
+        response_groups = [ratings_input.split()]
+        print(f"\n📊 Single response with {len(response_groups[0])} rating(s): {', '.join(response_groups[0])}")
     
-    if not ratings:
-        print("✗ No ratings entered")
-        return
-    
-    print(f"\n📊 You entered {len(ratings)} rating(s): {', '.join(ratings)}")
-    confirm = input("Proceed with clicking these ratings? (y/n): ").strip().lower()
+    confirm = input("\nProceed with clicking these ratings? (y/n): ").strip().lower()
     
     if confirm != 'y':
         print("Cancelled.")
         return
     
-    # Click each rating button in sequence
-    clicked_count = 0
-    failed_count = 0
+    # Process each response section
+    total_clicked = 0
+    total_failed = 0
     
-    for i, rating in enumerate(ratings, 1):
-        print(f"\n[{i}/{len(ratings)}] Clicking rating '{rating}'...")
+    for response_num, ratings in enumerate(response_groups, 1):
+        if len(response_groups) > 1:
+            print(f"\n{'='*60}")
+            print(f"📝 RESPONSE {response_num} - {len(ratings)} ratings")
+            print(f"{'='*60}")
+            
+            # Scroll to find the response section
+            if response_num > 1:
+                print(f"\n🔍 Looking for 'Response {response_num}' section...")
+                try:
+                    # Try to find and scroll to Response N heading
+                    response_heading = page.locator(f'text=/Response\\s*{response_num}/i').first
+                    if response_heading.count() > 0:
+                        response_heading.scroll_into_view_if_needed()
+                        time.sleep(0.5)
+                        print(f"✓ Found and scrolled to Response {response_num}")
+                    else:
+                        print(f"⚠ Could not find 'Response {response_num}' heading, scrolling down...")
+                        page.evaluate(f"window.scrollBy(0, {800 * (response_num - 1)})")
+                        time.sleep(0.5)
+                except:
+                    print(f"⚠ Scrolling down for Response {response_num}...")
+                    page.evaluate(f"window.scrollBy(0, {800 * (response_num - 1)})")
+                    time.sleep(0.5)
+        else:
+            # Single response - scroll to top
+            print("\n📜 Scrolling to top of page...")
+            try:
+                page.evaluate("window.scrollTo(0, 0)")
+                time.sleep(0.5)
+            except:
+                pass
         
-        try:
+        # Click ratings for this response section
+        clicked_count = 0
+        failed_count = 0
+        clicked_indices = {}  # Track which index of each rating value we've clicked
+        
+        for i, rating in enumerate(ratings, 1):
+            print(f"\n[{i}/{len(ratings)}] Clicking rating '{rating}'...")
+            
+            # Get the index for this rating value (how many times we've clicked this value before)
+            current_index = clicked_indices.get(rating, 0)
+            
             success = False
             
-            # Method 1: Click by role and exact name
+            # IMPORTANT: Re-query elements each time (page might have changed)
+            all_candidates = []
+            
+            # Method 1: Find all buttons with exact text match
             try:
-                button = page.get_by_role("button", name=rating, exact=True).first
-                if button.count() > 0:
-                    button.click()
-                    success = True
+                buttons = page.get_by_role("button", name=rating, exact=True).all()
+                all_candidates.extend(buttons)
             except:
                 pass
             
-            # Method 2: Click by exact text
-            if not success:
-                try:
-                    page.get_by_text(rating, exact=True).first.click()
-                    success = True
-                except:
-                    pass
+            # Method 2: Find all elements with exact text
+            try:
+                text_elements = page.get_by_text(rating, exact=True).all()
+                all_candidates.extend(text_elements)
+            except:
+                pass
             
-            # Method 3: Try finding button with this text
-            if not success:
-                try:
-                    page.locator(f'button:has-text("{rating}")').first.click()
-                    success = True
-                except:
-                    pass
+            # Method 3: Find buttons containing this text
+            try:
+                button_locators = page.locator(f'button:has-text("{rating}")').all()
+                all_candidates.extend(button_locators)
+            except:
+                pass
             
-            # Method 4: Try label-based (for radio buttons)
-            if not success:
-                try:
-                    page.locator(f'label:has-text("{rating}")').first.click()
-                    success = True
-                except:
-                    pass
+            # Method 4: Find labels (for radio buttons)
+            try:
+                label_elements = page.locator(f'label:has-text("{rating}")').all()
+                all_candidates.extend(label_elements)
+            except:
+                pass
             
-            # Method 5: Try input with value attribute
-            if not success:
-                try:
-                    page.locator(f'input[value="{rating}"]').first.click()
-                    success = True
-                except:
-                    pass
+            # Method 5: Find inputs with value
+            try:
+                input_elements = page.locator(f'input[value="{rating}"]').all()
+                all_candidates.extend(input_elements)
+            except:
+                pass
             
-            if success:
-                print(f"  ✓ Clicked rating '{rating}'")
-                clicked_count += 1
-                time.sleep(0.3)  # Small delay between clicks
-            else:
-                print(f"  ✗ Could not find rating button '{rating}'")
-                failed_count += 1
+            # Remove duplicates by checking if elements are the same
+            unique_candidates = []
+            seen_boxes = set()
+            
+            for candidate in all_candidates:
+                try:
+                    if candidate.is_visible():
+                        box = candidate.bounding_box()
+                        if box:
+                            box_id = f"{int(box['x'])},{int(box['y'])},{int(box['width'])},{int(box['height'])}"
+                            if box_id not in seen_boxes:
+                                seen_boxes.add(box_id)
+                                unique_candidates.append((candidate, box))
+                except:
+                    continue
+            
+            # Sort candidates by Y position (top to bottom)
+            unique_candidates.sort(key=lambda x: x[1]['y'])
+            
+            print(f"  🔍 Found {len(unique_candidates)} buttons with value '{rating}', clicking #{current_index + 1}")
+            
+            # Try to click the button at the current index
+            if current_index < len(unique_candidates):
+                try:
+                    candidate, box = unique_candidates[current_index]
+                    
+                    # Scroll into view and wait
+                    candidate.scroll_into_view_if_needed()
+                    time.sleep(0.4)
+                    
+                    # Highlight for debugging (optional - can remove later)
+                    try:
+                        page.evaluate("""(element) => {
+                            element.style.outline = '3px solid red';
+                            setTimeout(() => element.style.outline = '', 500);
+                        }""", candidate)
+                    except:
+                        pass
+                    
+                    # Click it
+                    candidate.click(timeout=3000, force=False)
+                    
+                    # Update index for this rating value
+                    clicked_indices[rating] = current_index + 1
+                    
+                    success = True
+                    print(f"  ✓ Clicked rating '{rating}' (#{current_index + 1} occurrence)")
+                    clicked_count += 1
+                    time.sleep(0.6)  # Longer delay to let page settle
+                except Exception as e:
+                    print(f"  ⚠ Click failed: {e}")
+            
+            if not success:
+                print(f"  ✗ Could not find occurrence #{current_index + 1} of rating '{rating}'")
+                print(f"     (Found {len(unique_candidates)} total buttons with this value)")
                 
-                # Ask if user wants to continue
-                if i < len(ratings):
-                    cont = input(f"  ⚠ Continue with remaining {len(ratings) - i} ratings? (y/n): ").strip().lower()
-                    if cont != 'y':
-                        print("  Stopped.")
-                        break
+                # Offer to manually click or skip
+                print(f"  Options:")
+                print(f"    c - Continue anyway (try next available)")
+                print(f"    m - Manually click and then press Enter")
+                print(f"    s - Skip this rating")
+                manual_choice = input(f"  Choice (c/m/s): ").strip().lower()
+                
+                if manual_choice == 'm':
+                    input("  Click the button manually, then press Enter...")
+                    clicked_indices[rating] = current_index + 1
+                    clicked_count += 1
+                elif manual_choice == 'c':
+                    # Try to click any available button with this value that we haven't clicked
+                    for idx, (candidate, box) in enumerate(unique_candidates):
+                        if idx >= current_index:
+                            try:
+                                candidate.scroll_into_view_if_needed()
+                                time.sleep(0.3)
+                                candidate.click(timeout=2000)
+                                clicked_indices[rating] = idx + 1
+                                print(f"  ✓ Clicked rating '{rating}' (#{idx + 1} occurrence at {int(box['y'])}px)")
+                                clicked_count += 1
+                                time.sleep(0.5)
+                                success = True
+                                break
+                            except:
+                                continue
+                    if not success:
+                        failed_count += 1
+                else:
+                    failed_count += 1
         
-        except Exception as e:
-            print(f"  ✗ Error clicking '{rating}': {e}")
-            failed_count += 1
+        # Summary for this response
+        if len(response_groups) > 1:
+            print(f"\n{'-'*60}")
+            print(f"Response {response_num} Summary:")
+            print(f"  ✓ Successfully clicked: {clicked_count}/{len(ratings)}")
+            if failed_count > 0:
+                print(f"  ✗ Failed: {failed_count}/{len(ratings)}")
+            print(f"{'-'*60}")
+        
+        total_clicked += clicked_count
+        total_failed += failed_count
     
-    # Summary
+    # Final summary
     print("\n" + "="*60)
-    print(f"📊 Rating Summary:")
-    print(f"  ✓ Successfully clicked: {clicked_count}/{len(ratings)}")
-    if failed_count > 0:
-        print(f"  ✗ Failed: {failed_count}/{len(ratings)}")
+    print(f"📊 Final Rating Summary:")
+    total_ratings = sum(len(group) for group in response_groups)
+    print(f"  ✓ Total clicked: {total_clicked}/{total_ratings}")
+    if total_failed > 0:
+        print(f"  ✗ Total failed: {total_failed}/{total_ratings}")
+    if len(response_groups) > 1:
+        print(f"  📝 Responses processed: {len(response_groups)}")
     print("="*60)
 
 def get_session_templates():
